@@ -8,15 +8,21 @@ on:
 jobs:
   # Runs first and on its own: nothing else about this repository matters if it
   # is leaking something. Scans the working tree AND the commit history, since a
-  # clean tree with a leaking commit message is still a leak, and rewriting
-  # history after a repository is public is far more expensive than before.
-  public-readiness:
+  # credential removed in a later commit is still in the one that added it, and
+  # rewriting history after a repository is public is far more expensive than
+  # before. `fetch-depth: 0` is what makes the history half real.
+  #
+  # This is the credential half only. Deciding whether a tree is READY to be
+  # public means looking for customer, prospect and internal-system names, and a
+  # tool that does that has to carry those names — so it cannot live here. That
+  # audit is private and runs before code reaches this repository.
+  no-secrets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: python3 audit-public-readiness.py
+      - run: python3 scripts/check-no-secrets.py
 
   test:
     runs-on: ubuntu-latest
