@@ -1,0 +1,64 @@
+name: Release
+
+# Publishes to npm when a version tag is pushed.
+#
+# **Inert until NPM_TOKEN exists**, which is deliberate. Publishing under the
+# `@tailor-ai` scope claims a name we own forever and is not something a merge
+# should be able to do by accident, so the workflow ships first and the secret is
+# added when we mean it. Without the secret the guard below fails the job with a
+# readable message rather than a `npm ERR! need auth` at the end of a build.
+#
+# Going public later is one flag: `--access public` below, and `private: false`
+# in package.json. Nothing else about this file changes.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - name: refuse to publish without a token
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "NPM_TOKEN is not set, so this repository cannot publish yet."
+            echo "That is the expected state until we decide to publish."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+      # The tag and package.json disagreeing is the classic release bug: the tag
+      # says v0.2.0, npm gets 0.1.0, and the mismatch is only visible months
+      # later when somebody tries to find the source for a published version.
+      - name: check the tag matches the version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
+
+      # `--access restricted` keeps it private while the repository is.
+      # Change to `public` in the same commit that flips `private` in
+      # package.json, so the two can never disagree.
+      - run: npm publish --access restricted --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,27 @@
+{
+  // Emits the JavaScript, with our comments stripped out of it.
+  //
+  // Measured before this existed: `dist/core/match.js` shipped at 12,436 bytes,
+  // of which the actual code minifies to 1,531. The other 88% was our own
+  // reasoning — and it pushed that file PAST the 10KB code budget of a
+  // CloudFront Function, which is the one runtime the core exists to fit. A
+  // customer following our own README would have hit the limit on prose.
+  //
+  // It is a separate config rather than a flag on the main one because
+  // TypeScript's `removeComments` applies to declarations too, and stripping
+  // JSDoc out of the `.d.ts` takes every parameter description out of the
+  // customer's editor — which is where documentation on an SDK earns its keep.
+  // That regression is easy to ship and invisible until somebody hovers, so
+  // `package-shape.test.ts` asserts both halves: no comments in the JavaScript,
+  // docblocks intact in the declarations.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "emitDeclarationOnly": false,
+    "declaration": false,
+    "declarationMap": false,
+    "composite": false,
+    "removeComments": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

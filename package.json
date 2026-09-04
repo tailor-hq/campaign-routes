@@ -1,0 +1,68 @@
+{
+  "name": "@tailor-ai/campaign-routes",
+  "version": "0.1.0",
+  "description": "Serve the campaign page a visitor should get, from rules held in your own CMS. Pure, dependency-free, and small enough to run inside a CloudFront Function.",
+  "keywords": [
+    "personalization",
+    "ab-testing",
+    "landing-page",
+    "middleware",
+    "edge",
+    "nextjs",
+    "contentful",
+    "utm",
+    "campaign"
+  ],
+  "license": "MIT",
+  "author": "Tailor AI <hello@tailorhq.ai> (https://tailorhq.ai)",
+  "homepage": "https://github.com/tailor-hq/campaign-routes#readme",
+  "bugs": {
+    "url": "https://github.com/tailor-hq/campaign-routes/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tailor-hq/campaign-routes.git"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./endpoint": {
+      "types": "./dist/endpoint.d.ts",
+      "import": "./dist/endpoint.js",
+      "default": "./dist/endpoint.js"
+    },
+    "./contentful": {
+      "types": "./dist/contentful.d.ts",
+      "import": "./dist/contentful.js",
+      "default": "./dist/contentful.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.js",
+      "default": "./dist/next.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "build": "npx tsc --build && npx tsc -p tsconfig.build.json",
+    "typecheck": "npx tsc --noEmit && npx tsc -p tsconfig.test.json",
+    "lint": "npx tsc --noEmit && npx tsc -p tsconfig.test.json",
+    "test": "jest --watchman=false --verbose --config jest.config.js",
+    "prepack": "npm run build"
+  }
+}

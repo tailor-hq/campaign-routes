@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    // ES5, unlike every other package here, and deliberately: this compiles to
+    // code that has to run inside a CloudFront Function, whose runtime is ES 5.1
+    // with only some ES6-12 features. Downlevelling the SYNTAX is what lets the
+    // source stay readable; the built-ins are guarded separately by
+    // es5-safe.test.ts, because TypeScript will not polyfill those.
+    "target": "ES5",
+    // Wider than the target, and the two are answering different questions.
+    // `target` decides the SYNTAX that is emitted, which is what has to be ES5.
+    // `lib` only decides which types the compiler knows about, and the adapters
+    // legitimately need Promise, fetch and URL — they run in Node and in the
+    // Edge runtime, not in a CloudFront Function.
+    //
+    // Widening it does mean the compiler would no longer reject `Object.entries`
+    // in the core. That is es5-safe.test.ts's job, and always was: TypeScript
+    // never polyfilled those built-ins, so a narrow `lib` was catching them by
+    // accident rather than by design.
+    "lib": ["ES2018", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "node",
+    // Declarations only; `tsconfig.build.json` emits the JavaScript. The split
+    // exists so the two can disagree about comments — see that file for why.
+    "emitDeclarationOnly": true,
+    "removeComments": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "composite": true,
+    "allowJs": false,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": false
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

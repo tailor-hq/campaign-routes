@@ -1,0 +1,39 @@
+{
+  // Type-checks the tests, which the shipped build deliberately excludes.
+  //
+  // Without this the tests are checked by nothing: `tsconfig.json` excludes
+  // `**/*.test.ts`, and ts-jest runs with `diagnostics: false`. So a mistyped
+  // mock or a bad cast compiles nowhere and fails nothing — the hole the root
+  // CLAUDE.md warns about ("jest is transpile-only, so a type error in a test
+  // file runs fine and then fails tsc"), except here tsc never saw them either.
+  //
+  // Not `composite`, and emits nothing: the tests are not part of the package,
+  // so nothing may depend on their output. `lint` runs this alongside the
+  // shipped check.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Widened from `src` so `examples/` can be checked. Safe only because this
+    // config emits nothing; the build configs keep `rootDir` at `src`, which is
+    // what stops an example ever reaching `dist`.
+    "rootDir": ".",
+    // The tests run as ES2020 while the shipped code targets ES5, matching
+    // jest.config.js. Holding the tests to the CloudFront-era target buys
+    // nothing — they never ship — and costs a downlevelIteration flag every
+    // time one iterates a Set.
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    // The base config emits declarations only; this one emits nothing at all.
+    "emitDeclarationOnly": false,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["jest", "node"]
+  },
+  // `examples` is typechecked here and nowhere else, which is the point of it
+  // being here rather than in tsconfig.json: an example that does not compile
+  // is worse than no example, and the build configs must keep excluding it so
+  // nothing under `examples/` reaches `dist` or the published package.
+  "include": ["src", "examples"],
+  "exclude": ["node_modules", "dist"]
+}
