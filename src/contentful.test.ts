@@ -1,4 +1,5 @@
 import { createContentfulRouteSource, toCampaignRoutes } from './contentful.js';
+import type { CampaignRoute } from './core/index.js';
 
 const entry = (fields: Record<string, unknown>) => ({ fields });
 
@@ -206,6 +207,36 @@ describe('createContentfulRouteSource', () => {
     expect(await source.getRoutes()).toEqual([]);
     expect(onError).toHaveBeenCalledTimes(1);
     expect((onError.mock.calls[0] as unknown[])[0]).toBeInstanceOf(Error);
+  });
+
+  it('copies and freezes a bootstrap, so the caller cannot change routing after the fact', async () => {
+    const bootstrap: CampaignRoute[] = [{ ...ROUTE_FIELDS, matchParams: { ...ROUTE_FIELDS.matchParams } }];
+    const fetchImpl = jest.fn(() => new Promise<never>(() => {})) as unknown as typeof fetch;
+    const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl, bootstrap });
+
+    const served = await source.getRoutes();
+    expect(served).toEqual([ROUTE_FIELDS]);
+    expect(Object.isFrozen(served[0])).toBe(true);
+    expect(Object.isFrozen(bootstrap[0])).toBe(false);
+
+    bootstrap[0]!.targetPath = '/elsewhere';
+    expect(await source.getRoutes()).toEqual([ROUTE_FIELDS]);
+  });
+
+  it('ignores a bootstrap with nothing usable in it, rather than seeding "no campaigns"', async () => {
+    // An empty or wholly malformed bootstrap cannot be told apart from "I had
+    // nothing to ship", and seeding it would make the first request serve the
+    // original page while looking configured. Nothing usable means none: the
+    // first read blocks on Contentful as it would with no bootstrap at all.
+    const fetchImpl = respondWith([entry(ROUTE_FIELDS)]);
+    const source = createContentfulRouteSource({
+      spaceId: 's',
+      deliveryToken: 't',
+      fetchImpl,
+      bootstrap: [{ basePath: '/a', targetPath: '/b', matchParams: {} }]
+    });
+    expect(await source.getRoutes()).toEqual([ROUTE_FIELDS]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('hands out a frozen array, since every caller gets the same one', async () => {

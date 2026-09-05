@@ -33,7 +33,7 @@
  */
 
 import { createCachedLoader, type CachedLoader } from './internal/cached-loader.js';
-import { freezeRoutes } from './internal/freeze-routes.js';
+import { normalizeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 
 /** The path Tailor's guide tells customers to serve the rules on. */
@@ -317,6 +317,22 @@ const MAX_CONCURRENT_LOADS = 4;
 const isPayload = (value: unknown): value is CampaignRoutesPayload =>
   !!value && typeof value === 'object' && Array.isArray((value as CampaignRoutesPayload).routes);
 
+/**
+ * A payload built from input this package did not construct — the endpoint's
+ * JSON, or a caller's bootstrap — as fresh, leaf-frozen copies. Every request
+ * on this isolate gets these by reference, and the callers are code we do not
+ * control; a malformed rule is skipped rather than failing the payload, and a
+ * path that is not a string is dropped.
+ */
+const frozenPayload = (routes: unknown, paths: unknown): CampaignRoutesPayload => {
+  const payload = campaignRoutesPayload(
+    normalizeRoutes(routes),
+    Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string') : undefined
+  );
+  if (payload.paths) Object.freeze(payload.paths);
+  return Object.freeze(payload);
+};
+
 /** Paths compare the way the core compares them: trailing slash and case are noise. */
 const normalize = (path: string): string => {
   const trimmed = String(path).trim().toLowerCase();
@@ -401,7 +417,9 @@ export const createEndpointRouteSource = (
       waitUntil: config.waitUntil,
       awaitStaleRefresh: config.awaitStaleRefresh,
       // The shipped rules are for this deploy, whichever hostname it answers on.
-      bootstrap: config.bootstrap,
+      // Copied and frozen, so the caller's own object neither leaks into the
+      // cache nor is frozen under them.
+      bootstrap: config.bootstrap ? frozenPayload(config.bootstrap.routes, config.bootstrap.paths) : undefined,
       load: async (signal) => {
         if (activeLoads >= MAX_CONCURRENT_LOADS) {
           throw new Error('campaign routes: too many rule reads in flight');
@@ -412,16 +430,7 @@ export const createEndpointRouteSource = (
           if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
           const body: unknown = await response.json();
           if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
-          // Frozen to the leaf, for the same reason the Contentful source
-          // freezes: every request on this isolate gets these by reference,
-          // and the callers are code we do not control.
-          const payload = campaignRoutesPayload(
-            body.routes,
-            Array.isArray(body.paths) ? body.paths : undefined
-          );
-          freezeRoutes(payload.routes);
-          if (payload.paths) Object.freeze(payload.paths);
-          return Object.freeze(payload);
+          return frozenPayload(body.routes, body.paths);
         } finally {
           activeLoads -= 1;
         }

@@ -50,7 +50,9 @@ First release. Not yet published.
   cannot fan out into a burst of server-side requests.
 - Cached rules are frozen to the leaf in both sources, so an `onMatch` or
   `pageExists` that edits a rule in place cannot change routing for every later
-  visitor on that isolate.
+  visitor on that isolate. A caller's `bootstrap` is copied and frozen rather
+  than shared, and rules read from an endpoint's JSON are validated one at a
+  time, so a malformed entry is skipped instead of failing the whole payload.
 - An empty `paths` list in the endpoint payload now fails closed: it is the
   route handler's statement that the site serves no pages, and every rewrite
   is refused. "Unknown" is spelled by leaving `paths` out. Reading `[]` as
@@ -62,9 +64,9 @@ First release. Not yet published.
 - An outage is bounded: after `maxStaleMs` (default one hour) of failed reads
   both sources answer with no rules, so every visitor gets their original page
   and a campaign somebody unpublished cannot outlive the outage by more than
-  that. A shipped `bootstrap` is exempt until the first real read lands.
-  `onError` on both sources reports every failed read to the customer's own
-  monitoring, and a throw inside it is swallowed.
+  that. A shipped `bootstrap` is bound the same way, from the moment the
+  source was built. `onError` on both sources reports every failed read to the
+  customer's own monitoring, and a throw inside it is swallowed.
 - `onMatch`, called when a campaign page is about to be served, so your own
   analytics can attribute a conversion to the campaign. Never awaited, never
   able to throw — including an `async` callback, whose rejection is observed for

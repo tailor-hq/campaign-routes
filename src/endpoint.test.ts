@@ -245,6 +245,46 @@ describe('createEndpointRouteSource', () => {
     clock.mockRestore();
   });
 
+  it('skips a malformed rule in the payload rather than failing the whole read', async () => {
+    // One bad entry in the endpoint's JSON must not switch every campaign off.
+    const fetchImpl = respondWith({
+      routes: [
+        null,
+        5,
+        'string',
+        { basePath: '/half' },
+        { basePath: '/a', targetPath: '/b', matchParams: ['utm'] },
+        { basePath: '/a', targetPath: '/b', matchParams: {} },
+        { basePath: '/a', targetPath: '/b', matchParams: { utm_campaign: 7 } },
+        { ...ROUTE, matchParams: { ...ROUTE.matchParams, page: 2 } },
+        ROUTE
+      ],
+      paths: ['/pricing', 42, null]
+    });
+    const source = createEndpointRouteSource({ fetchImpl });
+    expect(await source.getRoutes('https://site.test')).toEqual([ROUTE, ROUTE]);
+    expect(source.pageExists('/pricing')).toBe(true);
+  });
+
+  it('copies and freezes a bootstrap, so the caller cannot change routing after the fact', async () => {
+    // The caller's own object is left as it was: neither frozen under them
+    // nor shared with the cache, where an edit would reroute later visitors.
+    const bootstrap = { routes: [{ ...ROUTE, matchParams: { ...ROUTE.matchParams } }], paths: ['/x'] };
+    const fetchImpl = jest.fn(() => new Promise<never>(() => {})) as unknown as typeof fetch;
+    const source = createEndpointRouteSource({ fetchImpl, bootstrap });
+
+    const served = await source.getRoutes('https://site.test');
+    expect(served).toEqual([ROUTE]);
+    expect(Object.isFrozen(served[0])).toBe(true);
+    expect(Object.isFrozen(served[0]!.matchParams)).toBe(true);
+    expect(Object.isFrozen(bootstrap.routes[0])).toBe(false);
+
+    bootstrap.routes[0]!.targetPath = '/elsewhere';
+    bootstrap.paths.push('/elsewhere');
+    expect(await source.getRoutes('https://site.test')).toEqual([ROUTE]);
+    expect(source.pageExists('/elsewhere')).toBe(false);
+  });
+
   it('hands every caller the same frozen rules, so nobody can corrupt the cache', async () => {
     // Every request on the isolate gets these arrays by reference, and the
     // callers are the customer's own code. The Contentful source freezes for

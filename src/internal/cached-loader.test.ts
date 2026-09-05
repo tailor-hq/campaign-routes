@@ -145,13 +145,17 @@ describe('createCachedLoader', () => {
       expect(await loader.read()).toBeNull();
     });
 
-    it('serves a bootstrap until the first real read lands, however long that takes', async () => {
-      // The bootstrap is the floor, not a value that can go stale: with the
-      // upstream down from the start there is nothing better to fall back to.
+    it('binds a bootstrap the same way, from the moment the loader was built', async () => {
+      // A bootstrap went out with the deploy, so a campaign withdrawn after it
+      // is exactly what an upstream that is down from the start would keep
+      // serving. The bound is one rule with no exemption: the shipped rules
+      // hold for maxStaleMs, then every visitor gets their original page.
       let now = 1_000_000;
       jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let failing = true;
       const load = jest.fn(async () => {
-        throw new Error('down');
+        if (failing) throw new Error('down');
+        return 'fresh';
       });
       const loader = createCachedLoader({
         ttlMs: 1_000,
@@ -161,8 +165,19 @@ describe('createCachedLoader', () => {
         load
       });
       expect(await loader.read()).toBe('shipped');
-      now += 100_000;
+      await settle();
+      now += 9_999;
       expect(await loader.read()).toBe('shipped');
+      await settle();
+      now += 2;
+      expect(await loader.read()).toBeNull();
+      await settle();
+
+      failing = false;
+      now += 30_000;
+      expect(await loader.read()).toBeNull();
+      await settle();
+      expect(await loader.read()).toBe('fresh');
     });
 
     it('tells onError about each failed refresh, and survives the callback throwing', async () => {

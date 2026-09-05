@@ -49,8 +49,8 @@ export interface CachedLoaderConfig<T> {
    * How long a last-good value may keep serving while refreshes fail, in ms.
    * Default one hour. Past it, reads answer with nothing and the caller falls
    * back to the page it was going to serve, so a campaign somebody withdrew
-   * cannot outlive an outage by more than this. A bootstrap is exempt: it is
-   * the floor until the first real read lands, however long that takes.
+   * cannot outlive an outage by more than this. A shipped bootstrap is bound
+   * the same way, counted from the moment the loader was built.
    */
   maxStaleMs?: number;
   /**
@@ -119,6 +119,9 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   // never a thing that delays the truth.
   let cached: T | null = config.bootstrap ?? null;
   let cachedAt = 0;
+  // When the value in hand was installed, for the outage bound. A bootstrap's
+  // `cachedAt` stays 0 so a real read starts at once, but it was installed now.
+  let installedAt = cached !== null ? Date.now() : 0;
   let inFlight: Promise<T | null> | null = null;
   let consecutiveFailures = 0;
   let lastFailureAt = 0;
@@ -128,9 +131,8 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
     Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10));
   const backingOff = (): boolean =>
     consecutiveFailures > 0 && Date.now() - lastFailureAt < backoffMs();
-  // `cachedAt` of 0 is a bootstrap that no real read has replaced yet, and it
-  // is served regardless: it is the floor, not a value that can go stale.
-  const tooStale = (): boolean => cachedAt > 0 && Date.now() - cachedAt > maxStaleMs;
+  const tooStale = (): boolean =>
+    cached !== null && installedAt > 0 && Date.now() - installedAt > maxStaleMs;
 
   const report = (error: unknown): void => {
     if (!config.onError) return;
@@ -159,6 +161,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       const value = await config.load(controller.signal);
       cached = value;
       cachedAt = Date.now();
+      installedAt = cachedAt;
       consecutiveFailures = 0;
       return value;
     } finally {

@@ -21,7 +21,7 @@
  */
 
 import { createCachedLoader } from './internal/cached-loader.js';
-import { freezeRoutes } from './internal/freeze-routes.js';
+import { freezeRoutes, normalizeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 import type { RouteSource } from './route-source.js';
 
@@ -270,6 +270,7 @@ export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig)
    * works to avoid. `MAX_PAGES` bounds the loop so a `total` that never stops
    * growing cannot hold a request open until the deadline kills it.
    */
+  const bootstrap = config.bootstrap ? normalizeRoutes(config.bootstrap) : [];
   const loader = createCachedLoader<CampaignRoute[]>({
     ttlMs,
     timeoutMs,
@@ -277,7 +278,9 @@ export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig)
     onError: config.onError,
     waitUntil: config.waitUntil,
     awaitStaleRefresh: config.awaitStaleRefresh,
-    bootstrap: config.bootstrap,
+    // Copied and frozen, so the caller's own array neither leaks into the
+    // cache nor is frozen under them. Nothing usable in it is the same as none.
+    bootstrap: bootstrap.length > 0 ? bootstrap : undefined,
     load: async (signal) => {
       const routes: CampaignRoute[] = [];
       let skip = 0;
