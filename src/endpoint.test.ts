@@ -191,6 +191,23 @@ describe('createEndpointRouteSource', () => {
     ]);
   });
 
+  it('freezes each rule to the leaf, so an onMatch cannot change routing for the next visitor', async () => {
+    // The outer array being frozen is not enough: a consumer's onMatch that
+    // "normalizes" matchParams in place would rewrite the rule for every
+    // request on this isolate for as long as the cache lives.
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl });
+    const [first] = await source.getRoutes('https://www.example.com');
+    expect(() => {
+      (first as { targetPath: string }).targetPath = '/elsewhere';
+    }).toThrow();
+    expect(() => {
+      (first!.matchParams as Record<string, string>).utm_campaign = 'changed';
+    }).toThrow();
+    const [again] = await source.getRoutes('https://www.example.com');
+    expect(again).toEqual(ROUTE);
+  });
+
   it('hands every caller the same frozen rules, so nobody can corrupt the cache', async () => {
     // Every request on the isolate gets these arrays by reference, and the
     // callers are the customer's own code. The Contentful source freezes for

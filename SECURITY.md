@@ -66,10 +66,14 @@ lives), carrier-grade NAT, `0.0.0.0`, anything carrying credentials, anything
 not `http(s)`. And reads in flight are capped across all origins, so a burst
 of forged Hosts cannot fan out into a burst of server-side requests.
 
-**Pass `trustedOrigins`** to read only from hostnames you name, or **pass
-`origin`** to ignore the request entirely; once set, neither is ever overridden
-by a request, and either is the right answer on a self-hosted production
-deployment.
+**Self-hosting with `next start`: pass `origin`**, the address the app listens
+on (`http://localhost:3000`). The origin the middleware sees there is the one
+Next is bound to, not the public hostname — verified against a production
+build — so an allowlist of public hostnames would match nothing, and pinning
+the listen address is both the working answer and the closed one: the request
+is never consulted. **On a platform that answers on several real hostnames,
+pass `trustedOrigins`** to read only from the ones you name. Once set, neither
+is ever overridden by a request.
 
 **The rules endpoint is public by design.** Middleware reads it without
 credentials, so anyone can too. It carries every campaign rule — which

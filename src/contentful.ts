@@ -21,6 +21,7 @@
  */
 
 import { createCachedLoader } from './internal/cached-loader.js';
+import { freezeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 import type { RouteSource } from './route-source.js';
 
@@ -255,11 +256,12 @@ export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig)
         if (items.length < PAGE_SIZE) break;
         if (typeof body?.total !== 'number' || skip >= body.total) break;
       }
-      // Frozen because every caller gets this same array by reference, and the
-      // callers are code we do not control. A customer's `pageExists` helper or
-      // logging wrapper sorting it in place would corrupt every subsequent
-      // request on that isolate, for as long as the cache lives.
-      return Object.freeze(routes) as CampaignRoute[];
+      // Frozen to the leaf, because every caller gets these same objects by
+      // reference and the callers are code we do not control: a `pageExists`
+      // helper sorting the array, or an `onMatch` editing a rule's parameters,
+      // would corrupt every subsequent request on that isolate for as long as
+      // the cache lives.
+      return freezeRoutes(routes);
     }
   });
 

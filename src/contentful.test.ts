@@ -177,6 +177,24 @@ describe('createContentfulRouteSource', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('freezes each rule to the leaf, so an onMatch cannot change routing for the next visitor', async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [entry(ROUTE_FIELDS)] })
+    })) as unknown as typeof fetch;
+    const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl });
+    const [first] = await source.getRoutes();
+    expect(() => {
+      (first as { targetPath: string }).targetPath = '/elsewhere';
+    }).toThrow();
+    expect(() => {
+      (first!.matchParams as Record<string, string>).utm_campaign = 'changed';
+    }).toThrow();
+    const [again] = await source.getRoutes();
+    expect(again).toEqual(ROUTE_FIELDS);
+  });
+
   it('hands out a frozen array, since every caller gets the same one', async () => {
     // The callers are code we do not control. A customer's helper sorting this
     // in place would corrupt every later request on that isolate.

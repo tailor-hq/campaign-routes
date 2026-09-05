@@ -55,10 +55,14 @@ import { campaignRouteFor } from '@tailor-ai/campaign-routes/next';
 
 // On Vercel or Netlify this is enough: the platform vouches for the Host
 // header, so the rules are read from the request's own origin and preview
-// deploys work with no configuration. Self-hosting, or behind a proxy that
-// forwards Host? In production this reads nothing (and warns once) until you
-// name your hostnames, so a forged Host cannot point it anywhere else:
-//   createEndpointRouteSource({ trustedOrigins: ['https://www.example.com'] })
+// deploys work with no configuration.
+//
+// Self-hosting with `next start`? In production this reads nothing (and warns
+// once) until you pin the address your app listens on, which is where the
+// route handler below actually is:
+//   createEndpointRouteSource({ origin: 'http://localhost:3000' })
+// A platform deployment that answers on several real hostnames can name them
+// instead: `trustedOrigins: ['https://www.example.com', 'https://example.com']`.
 const source = createEndpointRouteSource();
 
 export async function middleware(request: NextRequest) {

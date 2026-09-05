@@ -36,12 +36,16 @@ First release. Not yet published.
   for the Host header and public origins are read with no configuration; in
   development loopback is allowed too; in production anywhere else a
   request-derived origin reads nothing (with one `console.warn`) until
-  `trustedOrigins` or `origin` names the real hostnames. Destinations only a
+  `origin` pins the address the app listens on, or `trustedOrigins` names the
+  real hostnames a platform deployment answers on. Destinations only a
   server could reach (private ranges, link-local, carrier-grade NAT,
   `0.0.0.0`, credentials, non-http) are refused under every policy.
 - Rules are cached per origin, so a forged Host can poison only its own cache,
   and reads in flight are capped across origins so a burst of forged Hosts
   cannot fan out into a burst of server-side requests.
+- Cached rules are frozen to the leaf in both sources, so an `onMatch` or
+  `pageExists` that edits a rule in place cannot change routing for every later
+  visitor on that isolate.
 - A failing upstream is left alone for a short, doubling wait (1s to 30s)
   while the last good rules keep serving, so a fast 429 or 500 cannot turn
   every page request into an upstream request.

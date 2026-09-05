@@ -33,6 +33,7 @@
  */
 
 import { createCachedLoader, type CachedLoader } from './internal/cached-loader.js';
+import { freezeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 
 /** The path Tailor's guide tells customers to serve the rules on. */
@@ -246,10 +247,14 @@ export const isLoopbackOrigin = (origin: string): boolean => {
  *   with no configuration.
  * - **`refuse`** — production, off any such platform. A self-hosted Next.js or
  *   anything behind a proxy that forwards Host has no vouching to lean on, so
- *   a request-derived origin reads nothing until `trustedOrigins` or `origin`
- *   says which hostnames are real. That is the fail-closed default a public
- *   package owes its users, and it is loud rather than silent: see the warning
- *   in `createEndpointRouteSource`.
+ *   a request-derived origin reads nothing until the deployment says where
+ *   its rules are. For a self-hosted `next start` that is a pinned `origin`:
+ *   the origin the middleware sees there is the address Next is bound to
+ *   (`http://localhost:3000`), never the public hostname, so an allowlist of
+ *   public hostnames would match nothing. `trustedOrigins` is for a platform
+ *   deployment answering on several real hostnames. That is the fail-closed
+ *   default a public package owes its users, and it is loud rather than
+ *   silent: see the warning in `createEndpointRouteSource`.
  *
  * Exported so the decision is testable without a deploy.
  */
@@ -339,7 +344,7 @@ export const createEndpointRouteSource = (
     if (!warnedRefusal && typeof console !== 'undefined') {
       warnedRefusal = true;
       console.warn(
-        `campaign-routes: refused to read rules from ${origin}. Pass trustedOrigins (the hostnames this site answers on) or origin to createEndpointRouteSource.`
+        `campaign-routes: refused to read rules from ${origin}. Self-hosting? Pass origin, the address this app listens on (e.g. http://localhost:3000), to createEndpointRouteSource. On a platform with several real hostnames, pass trustedOrigins instead.`
       );
     }
     return null;
@@ -367,13 +372,11 @@ export const createEndpointRouteSource = (
           if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
           const body: unknown = await response.json();
           if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
-          // Frozen for the same reason the Contentful source freezes: every
-          // request on this isolate gets these arrays by reference, and the
-          // callers are code we do not control. A customer's helper sorting
-          // `routes` in place would corrupt every subsequent request for as
-          // long as the cache lives.
+          // Frozen to the leaf, for the same reason the Contentful source
+          // freezes: every request on this isolate gets these by reference,
+          // and the callers are code we do not control.
           const payload = campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
-          Object.freeze(payload.routes);
+          freezeRoutes(payload.routes);
           Object.freeze(payload.paths);
           return Object.freeze(payload);
         } finally {
