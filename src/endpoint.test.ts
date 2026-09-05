@@ -96,6 +96,38 @@ describe('createEndpointRouteSource', () => {
     expect(source.pageExists('/whatever')).toBe(true);
   });
 
+  it('treats a paths that is not a list as a failed read, keeping the last good inventory', async () => {
+    // Schema drift or a route-handler bug: reading `paths: "oops"` as unknown
+    // would cache it over the last good page list with the 404 guard off and
+    // nothing reported.
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    let broken = false;
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => (broken ? { routes: [ROUTE], paths: 'oops' } : { routes: [ROUTE], paths: ['/pricing'] })
+    })) as unknown as typeof fetch;
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl, onError, ttlMs: 1_000 });
+
+    await source.getRoutes('https://site.test');
+    expect(source.pageExists('/pricing-enterprise')).toBe(false);
+    broken = true;
+    now += 1_001;
+    await source.getRoutes('https://site.test');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(source.pageExists('/pricing-enterprise')).toBe(false);
+    expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('paths that is not a list');
+
+    // `null` is an honest "unknown", and a cold source with one reads nothing
+    // into the guard.
+    const nullPaths = createEndpointRouteSource({ fetchImpl: respondWith({ routes: [ROUTE], paths: null }) });
+    await nullPaths.getRoutes('https://site.test');
+    expect(nullPaths.pageExists('/anything')).toBe(true);
+    clock.mockRestore();
+  });
+
   it('refuses every candidate once the endpoint has said the site serves no pages', async () => {
     // `[]` is not "unknown". The payload carries `paths` whenever the route
     // handler supplied one, so an empty list is the endpoint's explicit

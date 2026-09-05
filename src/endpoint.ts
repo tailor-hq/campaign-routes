@@ -551,7 +551,15 @@ export const createEndpointRouteSource = (
           if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
           const body: unknown = await response.json();
           if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
-          return frozenPayload(body.routes, body.paths);
+          // `paths` may be absent or null (unknown, protects nothing) or a list.
+          // Anything else is schema drift or a route-handler bug, and reading
+          // it as "unknown" would cache the bad answer over the last good
+          // inventory with the 404 guard switched off and nothing reported.
+          // A failed read keeps the last good payload and tells `onError`.
+          if (body.paths !== undefined && body.paths !== null && !Array.isArray(body.paths)) {
+            throw new Error('campaign routes endpoint returned paths that is not a list');
+          }
+          return frozenPayload(body.routes, body.paths ?? undefined);
         } finally {
           activeLoads -= 1;
         }
