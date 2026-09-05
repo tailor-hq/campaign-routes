@@ -63,7 +63,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "lint": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "jest --watchman=false --verbose --config jest.config.js",
-    "prepack": "npm run build"
+    "prepack": "npm run clean && npm run build"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
