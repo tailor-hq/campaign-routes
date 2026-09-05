@@ -188,6 +188,37 @@ equally specific rules is a mistake in your content, and the failure it must not
 produce is a page that alternates between versions depending on which entry came
 back first.
 
+## Why the rules live in your CMS
+
+Routing rules in a content system can look odd to an engineer the first time.
+Two things are worth knowing before deciding it is.
+
+**It is the established pattern for anything marketing changes more often than
+the site deploys.** A "Redirect" content type read by middleware is a stock
+Contentful setup, for exactly this reason; Contentful's own personalization
+product keeps its audience and variant rules as entries in the space; every
+personalization platform that works with a headless CMS does the same. A rule
+here is the same shape: "this page, for visitors who arrived from that ad,
+serve that page instead". That is a statement about content, so it belongs with
+the content, under the roles, workflows and publish gates the content already
+has. Tailor writes every rule as a draft; someone on your team publishing it is
+what turns the campaign on, and unpublishing it is what turns it off. No new
+permission, no new tool, no request to an engineer per campaign.
+
+**The alternatives are each worse in a specific way.** `rewrites()` in
+`next.config.js` means a deploy per campaign, which is the cost this removes.
+Reading `searchParams` inside the page opts the whole route out of static
+generation, so every marketing page renders per request for the organic
+majority that carries no campaign (measured: one such read turned a `[...slug]`
+catch-all dynamic). A personalization service that decides at the edge puts a
+vendor in your request path, and this package's whole design is that nothing
+except your own CMS and your own app is in it.
+
+What this does *not* put in your CMS: any logic. The matching, the refusal to
+rewrite off-site, the caching and the failure behaviour are all in this
+package, versioned and tested. The CMS holds three fields per campaign, and a
+person who can publish a page can publish one.
+
 ## Knowing when a campaign served
 
 The package sends nothing anywhere. That also means nothing in *your* stack knows
