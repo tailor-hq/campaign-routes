@@ -32,6 +32,29 @@ carries `Authorization: Bearer <token>`, and a host read from deploy config is
 one mistake away from sending it elsewhere. It throws at construction rather than
 per request, so the failure lands where somebody is looking.
 
+**The endpoint source reads from the request's origin by default, and keeps
+one cache per origin.** `createEndpointRouteSource` fetches its rules from the
+site's own origin unless you pin one, which is what lets a preview deploy work
+with no configuration. That origin comes from the `Host` header, and behind a
+proxy that forwards it, or on any self-hosted Next.js, `Host` is
+attacker-supplied. Two things bound what that can do. Caches are held **per
+origin**, so rules fetched for a bogus `Host` are only ever served to requests
+carrying that same bogus `Host` — a spoofed request can poison the attacker's
+own cache and nobody else's, and two real hostnames on one deployment never
+share rules or page lists either. And `isInternalPath` confines every target to
+your own site's paths regardless. What remains is that the middleware makes an
+uncredentialed `GET` to whatever host the header named. **To remove even that,
+pass `origin`**; once set it is never overridden by a request, and the request
+origin is not consulted at all.
+
+**The rules endpoint is public by design.** Middleware reads it without
+credentials, so anyone can too. It carries every campaign rule — which
+parameters route to which page — and the list of paths your site serves. None
+of that is secret (the pages are public and the parameters are in your ads),
+but it is a tidy summary of your campaign targeting in one place. If that
+matters to you, gate the route on a header your middleware sends and this
+package does not know about.
+
 ## What it deliberately does not do
 
 - No telemetry, no logging, no network call other than to the customer's own CMS

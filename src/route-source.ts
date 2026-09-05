@@ -80,6 +80,10 @@ export interface RouteSource {
    * yet" protection without the customer having to wire anything up.
    *
    * A caller's own `pageExists` outranks this one. See each adapter.
+   *
+   * `origin` is the same value the adapter passed to `getRoutes`, so a source
+   * that keeps one page list per hostname can answer from the right one. A
+   * source that keeps one list ignores it.
    */
-  pageExists?: (path: string) => boolean;
+  pageExists?: (path: string, origin?: string) => boolean;
 }

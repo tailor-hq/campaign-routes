@@ -166,7 +166,12 @@ export const campaignRouteFor = async (
     const routes = await source.getRoutes(url.origin);
     // The caller's answer wins; otherwise the source's, if it has one. A source
     // that cannot tell contributes nothing rather than refusing everything.
-    const pageExists = options?.pageExists ?? source.pageExists;
+    // The source is asked about the same origin its rules were read for, so a
+    // source keeping one page list per hostname cannot answer from another's.
+    const sourcePageExists = source.pageExists;
+    const pageExists =
+      options?.pageExists ??
+      (sourcePageExists ? (path: string) => sourcePageExists(path, url.origin) : undefined);
     const match = matchCampaignRoute(
       routes,
       { path: url.pathname, searchParams: readSearchParams(url) },

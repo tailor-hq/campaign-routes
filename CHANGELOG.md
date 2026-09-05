@@ -24,7 +24,10 @@ First release. Not yet published.
   for runtimes that can.
 - `@tailor-ai/campaign-routes/next` — Next.js middleware. Returns a decision so
   the rewrite stays in your own file.
-- `@tailor-ai/campaign-routes/lambda-edge` — a CloudFront viewer-request handler.
+- A CloudFront viewer-request handler, in `examples/lambda-edge` rather than as
+  an entry point: it has never run in that runtime, and a published export is a
+  promise a README cannot walk back. It becomes an entry point once a real
+  deploy has proved it.
 - `onMatch`, called when a campaign page is about to be served, so your own
   analytics can attribute a conversion to the campaign. Never awaited, never
   able to throw — including an `async` callback, whose rejection is observed for

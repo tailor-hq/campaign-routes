@@ -32,7 +32,7 @@
  * quietly not routing.
  */
 
-import { createCachedLoader } from './internal/cached-loader.js';
+import { createCachedLoader, type CachedLoader } from './internal/cached-loader.js';
 import type { CampaignRoute } from './core/index.js';
 
 /** The path Tailor's guide tells customers to serve the rules on. */
@@ -102,9 +102,26 @@ export interface EndpointRouteSource {
    * every deploy into an un-personalized one — a silent, permanent-looking
    * failure. Not-yet-known and known-absent are different states, and only the
    * second one is evidence.
+   *
+   * `origin` says whose page list to answer from, and the adapter passes the
+   * same origin it passed to `getRoutes`. Without it the answer comes from the
+   * origin most recently read, which is right on a single-hostname deploy and
+   * a race on any other: two requests for different hostnames interleave at
+   * every `await`, so "the last origin read" is whichever request yielded last.
    */
-  pageExists: (path: string) => boolean;
+  pageExists: (path: string, origin?: string) => boolean;
 }
+
+/**
+ * How many distinct origins this source keeps a cache for at once.
+ *
+ * The origin is, by default, the Host header, so without a ceiling a stream of
+ * requests carrying random Hosts grows the map without limit. Eight covers
+ * production, a preview alias or two and a branch URL on one deployment; past
+ * that the least recently used origin is dropped and refetched on its next
+ * request.
+ */
+const MAX_ORIGINS = 8;
 
 const isPayload = (value: unknown): value is CampaignRoutesPayload =>
   !!value && typeof value === 'object' && Array.isArray((value as CampaignRoutesPayload).routes);
@@ -124,31 +141,90 @@ export const createEndpointRouteSource = (
   const path = config.path ?? DEFAULT_ENDPOINT_PATH;
   const doFetch = config.fetchImpl ?? fetch;
 
-  // The origin the last read used, so `peek` and a later read agree about which
-  // site's rules are in hand.
-  let lastOrigin = config.origin ?? '';
+  // **One cache per origin, never one cache for all of them.** That is the
+  // property everything below protects, for two reasons that both showed up in
+  // review:
+  //
+  // - The request origin is the Host header, and behind a forwarding proxy or
+  //   on self-hosted Next.js the Host header is attacker-supplied. With a single
+  //   shared cache, a request carrying `Host: evil.example` had this source
+  //   fetch its rules FROM the attacker and serve them to every following
+  //   visitor on the isolate for a TTL. With a cache per origin, that request
+  //   poisons a cache that only requests carrying the same bogus Host will ever
+  //   read — which is to say, only the attacker's own. What remains is a plain
+  //   uncredentialed GET to a host they already control, and pinning `origin`
+  //   removes even that.
+  // - No attacker is needed for the other one. A deployment routinely answers
+  //   on several hostnames — production, a preview alias, a branch URL — and a
+  //   shared cache meant whichever origin loaded first answered for all of
+  //   them, page list included.
+  //
+  // A pinned `origin` collapses the map to one entry and the request origin is
+  // ignored entirely, which is what makes the option a mitigation rather than
+  // decoration.
+  const pinnedOrigin = config.origin;
+  const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const loader = createCachedLoader<CampaignRoutesPayload>({
-    ttlMs: config.ttlMs ?? DEFAULT_TTL_MS,
-    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    bootstrap: config.bootstrap,
-    load: async (signal) => {
-      const response = await doFetch(lastOrigin + path, { signal });
-      if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
-      const body: unknown = await response.json();
-      if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
-      return campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
+  /** Insertion order is recency: a hit is re-inserted, and eviction takes the head. */
+  const loaders = new Map<string, CachedLoader<CampaignRoutesPayload>>();
+  // The origin most recently read, for a `pageExists` caller that names none.
+  let lastOrigin = pinnedOrigin ?? '';
+
+  const loaderFor = (origin: string): CachedLoader<CampaignRoutesPayload> => {
+    const existing = loaders.get(origin);
+    if (existing) {
+      loaders.delete(origin);
+      loaders.set(origin, existing);
+      return existing;
     }
-  });
+    const loader = createCachedLoader<CampaignRoutesPayload>({
+      ttlMs,
+      timeoutMs,
+      // The shipped rules are for this deploy, whichever hostname it answers on.
+      bootstrap: config.bootstrap,
+      load: async (signal) => {
+        const response = await doFetch(origin + path, { signal });
+        if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
+        const body: unknown = await response.json();
+        if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
+        // Frozen for the same reason the Contentful source freezes: every
+        // request on this isolate gets these arrays by reference, and the
+        // callers are code we do not control. A customer's helper sorting
+        // `routes` in place would corrupt every subsequent request for as long
+        // as the cache lives.
+        const payload = campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
+        Object.freeze(payload.routes);
+        Object.freeze(payload.paths);
+        return Object.freeze(payload);
+      }
+    });
+    loaders.set(origin, loader);
+    if (loaders.size > MAX_ORIGINS) {
+      const oldest = loaders.keys().next().value;
+      if (oldest !== undefined) loaders.delete(oldest);
+    }
+    return loader;
+  };
+
+  const resolveOrigin = (origin?: string): string => {
+    if (pinnedOrigin) return pinnedOrigin;
+    if (typeof origin === 'string' && origin.length > 0) return origin;
+    return lastOrigin;
+  };
 
   return {
     getRoutes: async (origin?: string) => {
-      if (typeof origin === 'string' && origin.length > 0) lastOrigin = origin;
-      const payload = await loader.read();
+      const resolved = resolveOrigin(origin);
+      lastOrigin = resolved;
+      const payload = await loaderFor(resolved).read();
       return payload ? payload.routes : [];
     },
-    pageExists: (candidate: string) => {
-      const payload = loader.peek();
+    pageExists: (candidate: string, origin?: string) => {
+      // `get`, not `loaderFor`: an origin nothing has read yet has no evidence
+      // to offer, and creating a loader to say so would let this synchronous
+      // path grow the map.
+      const payload = loaders.get(resolveOrigin(origin))?.peek() ?? null;
       // Nothing loaded yet, or an endpoint that returned no path list at all:
       // no evidence either way, so do not refuse on it.
       if (!payload || payload.paths.length === 0) return true;

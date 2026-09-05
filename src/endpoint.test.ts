@@ -161,4 +161,95 @@ describe('createEndpointRouteSource', () => {
     const source = createEndpointRouteSource({ timeoutMs: 40, fetchImpl });
     await expect(source.getRoutes('https://site.test')).resolves.toEqual([]);
   });
+
+  it('never lets a request origin override a pinned one', async () => {
+    // The request origin is the Host header, and behind a forwarding proxy or
+    // on self-hosted Next.js that header is attacker-supplied. A customer who
+    // pins `origin` is opting out of trusting it, and the pin has to hold on
+    // every call — including one that hands in a different origin — or the
+    // option is decoration and the SSRF it exists to close is still open.
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({
+      origin: 'https://www.example.com',
+      ttlMs: 0,
+      fetchImpl
+    });
+
+    await source.getRoutes('https://evil.example');
+    await source.getRoutes('https://also-evil.example');
+
+    const calls = (fetchImpl as unknown as jest.Mock).mock.calls;
+    expect(calls.map((call) => call[0])).toEqual([
+      'https://www.example.com/api/campaign-routes',
+      'https://www.example.com/api/campaign-routes'
+    ]);
+  });
+
+  it('hands every caller the same frozen rules, so nobody can corrupt the cache', async () => {
+    // Every request on the isolate gets these arrays by reference, and the
+    // callers are the customer's own code. The Contentful source freezes for
+    // this reason; this one has to as well or the two sources differ on the
+    // one property that decides whether a helper sorting in place breaks the
+    // site.
+    const source = createEndpointRouteSource({
+      fetchImpl: respondWith({ routes: [ROUTE], paths: ['/pricing-enterprise'] })
+    });
+
+    const routes = await source.getRoutes('https://site.test');
+    expect(Object.isFrozen(routes)).toBe(true);
+    expect(() => {
+      routes.push(ROUTE);
+    }).toThrow();
+  });
+
+  it("keeps each origin's rules apart, so one hostname never answers for another", async () => {
+    // A deployment routinely serves more than one hostname — production, a
+    // preview alias, a branch URL. One shared cache meant whichever origin
+    // loaded first answered for all of them, routes and page list alike.
+    const fetchImpl = jest.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.startsWith('https://a.example')
+          ? { routes: [ROUTE], paths: ['/pricing-enterprise'] }
+          : { routes: [], paths: ['/somewhere-else'] }
+    })) as unknown as typeof fetch;
+    const source = createEndpointRouteSource({ fetchImpl });
+
+    expect(await source.getRoutes('https://a.example')).toEqual([ROUTE]);
+    expect(await source.getRoutes('https://b.example')).toEqual([]);
+    expect(source.pageExists('/pricing-enterprise', 'https://a.example')).toBe(true);
+    expect(source.pageExists('/pricing-enterprise', 'https://b.example')).toBe(false);
+  });
+
+  it("lets a spoofed Host poison only its own cache, never a real visitor's", async () => {
+    // The request origin is the Host header, and behind a forwarding proxy that
+    // is attacker-supplied. The rules fetched for a bogus Host must reach only
+    // requests carrying that same bogus Host — the attacker's own.
+    const fetchImpl = jest.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.startsWith('https://evil.example')
+          ? { routes: [{ ...ROUTE, targetPath: '/attacker-picked' }], paths: [] }
+          : { routes: [ROUTE], paths: [] }
+    })) as unknown as typeof fetch;
+    const source = createEndpointRouteSource({ fetchImpl });
+
+    await source.getRoutes('https://evil.example');
+    expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+  });
+
+  it('bounds how many origins it remembers, so random Hosts cannot grow it forever', async () => {
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl });
+    for (let index = 0; index < 20; index += 1) {
+      await source.getRoutes(`https://host-${index}.example`);
+    }
+    // The first origin fell out of the map, so asking for it again inside the
+    // TTL is a fresh fetch rather than a cache hit.
+    const before = (fetchImpl as unknown as jest.Mock).mock.calls.length;
+    await source.getRoutes('https://host-0.example');
+    expect((fetchImpl as unknown as jest.Mock).mock.calls.length).toBe(before + 1);
+  });
 });

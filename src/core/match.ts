@@ -311,7 +311,11 @@ export const matchCampaignRoute = (
     if (pageExists) {
       let exists = false;
       try {
-        exists = pageExists(route.targetPath);
+        // Asked about the path that will actually be served, not the raw CMS
+        // field. A customer answering from their own route list with an exact
+        // comparison would otherwise miss `/pricing/` against `/pricing`, and
+        // refuse a page that exists.
+        exists = pageExists(pathToServe(route.targetPath));
       } catch {
         exists = false;
       }

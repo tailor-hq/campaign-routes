@@ -451,4 +451,19 @@ describe('the target path it hands back', () => {
     const match = matchCampaignRoute([route({ targetPath: authored })], adClick());
     expect(match?.route.targetPath).toBe(authored);
   });
+
+  it('asks pageExists about the path it will serve, not the raw field', () => {
+    // A customer answering from their own route list with an exact comparison
+    // would refuse `/product/analytics-enterprise/` against the page that
+    // exists as `/product/analytics-enterprise`, and the campaign would never
+    // route. Case is kept, because the served path keeps it.
+    const asked: string[] = [];
+    matchCampaignRoute([route({ targetPath: '  /Product/Analytics-Enterprise/ ' })], adClick(), {
+      pageExists: (path) => {
+        asked.push(path);
+        return true;
+      }
+    });
+    expect(asked).toEqual(['/Product/Analytics-Enterprise']);
+  });
 });
