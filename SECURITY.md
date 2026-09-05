@@ -91,8 +91,10 @@ is ever overridden by a request.
 
 **The rules endpoint is public by design.** Middleware reads it without
 credentials, so anyone can too. It carries every campaign rule — which
-parameters route to which page — and the list of paths your site serves. None
-of that is secret (the pages are public and the parameters are in your ads),
+parameters route to which page — the list of paths your site serves, and the
+version of this package your route handler was built with. None of that is
+secret (the pages are public, the parameters are in your ads, and the version
+is what a dependency scanner reads off your lockfile anyway),
 but it is a tidy summary of your campaign targeting in one place. If that
 matters to you, gate the route on a header your middleware sends and this
 package does not know about.

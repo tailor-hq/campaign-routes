@@ -14,7 +14,7 @@ export const freezeRoutes = (routes: CampaignRoute[]): CampaignRoute[] => {
     for (const key of Object.keys(route.matchParams)) {
       const matcher = route.matchParams[key];
       if (typeof matcher === 'object' && matcher !== null) {
-        if ('oneOf' in matcher) Object.freeze(matcher.oneOf);
+        if (Object.prototype.hasOwnProperty.call(matcher, 'oneOf')) Object.freeze((matcher as { oneOf: string[] }).oneOf);
         Object.freeze(matcher);
       }
     }
@@ -27,13 +27,19 @@ export const freezeRoutes = (routes: CampaignRoute[]): CampaignRoute[] => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** A fresh copy of a matcher, so the caller's own object is never the cached one. */
+/**
+ * A fresh copy of a matcher, so the caller's own object is never the cached
+ * one. Dispatches on the one own key `isParamMatcher` established, never with
+ * `in`, which would read an inherited property as the operator.
+ */
 const copyMatcher = (matcher: ParamMatcher): ParamMatcher => {
   if (typeof matcher === 'string') return matcher;
-  if ('contains' in matcher) return { contains: matcher.contains };
-  if ('startsWith' in matcher) return { startsWith: matcher.startsWith };
-  if ('endsWith' in matcher) return { endsWith: matcher.endsWith };
-  return { oneOf: matcher.oneOf.slice() };
+  const operator = Object.keys(matcher)[0];
+  const operand = (matcher as Record<string, unknown>)[operator!];
+  if (operator === 'contains') return { contains: operand as string };
+  if (operator === 'startsWith') return { startsWith: operand as string };
+  if (operator === 'endsWith') return { endsWith: operand as string };
+  return { oneOf: (operand as string[]).slice() };
 };
 
 /**

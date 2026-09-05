@@ -203,7 +203,7 @@ string:
 
 | `matchParams` value | Matches when the request's value… |
 | --- | --- |
-| `"enterprise plan"` | is exactly that |
+| `"enterprise plan"` | is exactly that (an empty string matches a parameter that is present and empty, `?utm_term=`) |
 | `"enterprise*"` | starts with `enterprise`; each `*` stands for any run of characters, including none, so `"*langsmith*"` is "contains" and a lone `"*"` is "present, whatever the value" |
 | `{ "contains": "langsmith" }` | contains it |
 | `{ "startsWith": "enterprise" }` | starts with it |
@@ -212,7 +212,9 @@ string:
 
 `basePath` takes one form of wildcard: a trailing `/*` covers a section, so
 `/blog/*` is `/blog` and every page under it, and `/*` is the whole site. A
-`targetPath` is always one page and may not contain `*`.
+star anywhere else in `basePath` makes the rule unusable (it is dropped, not
+matched literally), and a `targetPath` is always one page and may not contain
+`*`.
 
 None of this is a regular expression, and none of it will be. These strings are
 typed by marketers and run on every ad click, and a pattern that can be made to
@@ -226,8 +228,10 @@ so a rule demanding an exact parameter set would match in testing and never once
 in production. Values compare case-insensitively; keys do not.
 
 When two rules match, the narrower one wins: an exact `basePath` beats a
-section wildcard, a longer section prefix beats a shorter one, more parameters
-beat fewer, and among those an exact value beats a pattern. On a genuine tie the
+section wildcard, a longer section prefix beats a shorter one, more exact
+values beat fewer (so a rule naming the actual keyword beats a catch-all of
+lone `*`s, however many parameters the catch-all names), then more narrowing
+parameters, then more parameters of any kind. On a genuine tie the
 target path decides, which is arbitrary and deliberately deterministic: two
 equally specific rules is a mistake in your content, and the failure it must not
 produce is a page that alternates between versions depending on which entry came

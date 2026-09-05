@@ -125,13 +125,101 @@ describe('which rule wins', () => {
     expect(target(routes, click({ utm_term: 'x' }, '/pricing/teams'))).toBe('/pricing-section');
   });
 
-  it('prefers more parameters, then an exact value over a pattern', () => {
+  it('prefers an exact keyword over a catch-all of lone stars, however many the catch-all names', () => {
+    // Nearly every ad click carries utm_source and utm_term, so two lone stars
+    // describe nearly everyone; the rule naming the actual keyword is the one
+    // the marketer meant for this click.
     const routes = [
       rule({ utm_term: 'enterprise*' }, { targetPath: '/pattern' }),
       rule({ utm_term: 'enterprise plan' }, { targetPath: '/exact' }),
-      rule({ utm_term: '*', utm_source: '*' }, { targetPath: '/two-params' })
+      rule({ utm_term: '*', utm_source: '*' }, { targetPath: '/catch-all' })
     ];
-    expect(target(routes, click2)).toBe('/two-params');
-    expect(target(routes.slice(0, 2), click2)).toBe('/exact');
+    expect(target(routes, click2)).toBe('/exact');
+    expect(target([routes[0]!, routes[2]!], click2)).toBe('/pattern');
+  });
+
+  it('prefers more parameters once the exact values are equal', () => {
+    const routes = [
+      rule({ utm_term: 'enterprise plan' }, { targetPath: '/one' }),
+      rule({ utm_term: 'enterprise plan', utm_source: 'google' }, { targetPath: '/two' })
+    ];
+    expect(target(routes, click2)).toBe('/two');
+  });
+
+  it('ranks the page before the parameters, and the section prefix before them too', () => {
+    // An exact page with one parameter beats a section with three; a longer
+    // section prefix with one beats a shorter one with two.
+    const c = click({ utm_term: 'enterprise plan', utm_source: 'google', utm_medium: 'cpc' }, '/pricing/teams');
+    expect(
+      target(
+        [
+          rule({ utm_term: 'enterprise plan', utm_source: 'google', utm_medium: 'cpc' }, { basePath: '/pricing/*', targetPath: '/section' }),
+          rule({ utm_term: 'enterprise plan' }, { basePath: '/pricing/teams', targetPath: '/page' })
+        ],
+        c
+      )
+    ).toBe('/page');
+    expect(
+      target(
+        [
+          rule({ utm_term: 'enterprise plan', utm_source: 'google' }, { basePath: '/*', targetPath: '/site' }),
+          rule({ utm_term: 'enterprise plan' }, { basePath: '/pricing/*', targetPath: '/section' })
+        ],
+        c
+      )
+    ).toBe('/section');
+  });
+
+  it('breaks a tie between two patterns the same way every time', () => {
+    const routes = [
+      rule({ utm_term: { contains: 'enterprise' } }, { targetPath: '/b-contains' }),
+      rule({ utm_term: 'enterprise*' }, { targetPath: '/a-wildcard' })
+    ];
+    expect(target(routes, click2)).toBe('/a-wildcard');
+    expect(target(routes.slice().reverse(), click2)).toBe('/a-wildcard');
+  });
+
+  it('counts a oneOf as a pattern even when every entry is exact', () => {
+    const routes = [
+      rule({ utm_term: { oneOf: ['enterprise plan', 'other'] } }, { targetPath: '/one-of' }),
+      rule({ utm_term: 'enterprise plan' }, { targetPath: '/exact' })
+    ];
+    expect(target(routes, click2)).toBe('/exact');
+  });
+});
+
+describe('wildcard corners', () => {
+  it.each([
+    ['a suffix that would overlap the prefix', 'ab*b', 'ab', false],
+    ['a suffix that fits after the prefix', 'ab*b', 'abb', true],
+    ['a doubled star', 'a**b', 'a-anything-b', true],
+    ['an overlapping middle segment', '*aa*a', 'aaa', true],
+    ['an overlapping middle segment, too short', '*aa*a', 'aa', false]
+  ])('%s', (_label, pattern, value, expected) => {
+    expect(target([rule({ utm_term: pattern })], click({ utm_term: value })) !== null).toBe(expected);
+  });
+
+  it('reads an empty plain string as "present and empty"', () => {
+    expect(target([rule({ utm_term: '' })], click({ utm_term: '' }))).toBe('/pricing-enterprise');
+    expect(target([rule({ utm_term: '' })], click({ utm_term: 'x' }))).toBeNull();
+  });
+
+  it.each([
+    ['a oneOf that is a string', { oneOf: 'a' }],
+    ['a contains that is a list', { contains: ['a'] }]
+  ])('refuses %s', (_label, matcher) => {
+    expect(isParamMatcher(matcher)).toBe(false);
+  });
+
+  it('ignores an inherited operator: only an own key names one', () => {
+    // A matcher built from an object with an inherited `contains` and an own
+    // `oneOf` passes the own-key check and must be read as the oneOf.
+    const inherited = Object.create({ contains: 'zzz' }) as { oneOf: string[] };
+    inherited.oneOf = ['enterprise plan'];
+    expect(target([rule({ utm_term: inherited as never })], click({ utm_term: 'enterprise plan' }))).toBe('/pricing-enterprise');
+  });
+
+  it.each(['/blog*', '/blog/**', '/bl*g/*', '/*blog'])('drops a rule whose basePath puts a star anywhere but the end: %s', (basePath) => {
+    expect(target([rule({ utm_term: 'x' }, { basePath, targetPath: '/offer' })], click({ utm_term: 'x' }, '/blog/post'))).toBeNull();
   });
 });

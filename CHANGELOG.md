@@ -16,7 +16,8 @@ First release. Not yet published.
 
 - `matchCampaignRoute(rules, request)` — the matching core. Pure, no
   dependencies, no network, ES 5.1 built-ins only so it runs inside a CloudFront
-  Function. 3.9 kB built, against that runtime's 10 kB budget.
+  Function. About 8 kB built, against that runtime's 10 kB budget, and
+  `package-shape.test.ts` fails the build the day it is over.
 - `@tailor-ai/campaign-routes/endpoint` — read the rules from a route handler in
   your own app. Returns the rules and the paths that exist in one payload, so
   the "don't rewrite to a page nobody published" check comes for free.
@@ -33,8 +34,9 @@ First release. Not yet published.
   `{ contains }`, `{ startsWith }`, `{ endsWith }` and `{ oneOf: [...] }`; a
   trailing `/*` on `basePath` covers a section (`/blog/*`) or the site (`/*`).
   None of it is a regular expression, by design. The narrower rule wins: exact
-  page over section, longer section over shorter, more parameters, then exact
-  values over patterns.
+  page over section, longer section over shorter, more exact values (so a
+  keyword beats a catch-all of lone stars), then more narrowing parameters,
+  then more parameters of any kind.
 - The route handler's payload carries `version`, the package version it was
   built with, so whoever reads the endpoint can see what a site runs.
 - `waitUntil` and `awaitStaleRefresh` on both sources: the first hands the

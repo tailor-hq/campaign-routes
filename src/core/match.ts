@@ -140,24 +140,33 @@ const matchesWildcard = (pattern: string, value: string): boolean => {
   return tail >= cursor && value.substring(tail) === last;
 };
 
-/** Whether one request value satisfies one matcher; both compared lowercased. */
-const matchesValue = (matcher: ParamMatcher, actual: string): boolean => {
-  const value = actual.toLowerCase();
+/** Whether one already-lowercased request value satisfies one matcher. */
+const matchesLowered = (matcher: ParamMatcher, value: string): boolean => {
   if (typeof matcher === 'string') {
     const pattern = matcher.toLowerCase();
     return pattern.indexOf('*') === -1 ? pattern === value : matchesWildcard(pattern, value);
   }
-  if ('contains' in matcher) return value.indexOf(matcher.contains.toLowerCase()) !== -1;
-  if ('startsWith' in matcher) return value.indexOf(matcher.startsWith.toLowerCase()) === 0;
-  if ('endsWith' in matcher) {
-    const suffix = matcher.endsWith.toLowerCase();
+  // Dispatch on the one OWN key `isParamMatcher` established, never with `in`,
+  // which walks the prototype chain: a matcher built from an object with an
+  // inherited `contains` would otherwise be read as one.
+  const operator = Object.keys(matcher)[0];
+  const operand = (matcher as Record<string, unknown>)[operator];
+  if (operator === 'contains') return value.indexOf((operand as string).toLowerCase()) !== -1;
+  if (operator === 'startsWith') return value.indexOf((operand as string).toLowerCase()) === 0;
+  if (operator === 'endsWith') {
+    const suffix = (operand as string).toLowerCase();
     return value.length >= suffix.length && value.substring(value.length - suffix.length) === suffix;
   }
-  for (let index = 0; index < matcher.oneOf.length; index += 1) {
-    if (matchesValue(matcher.oneOf[index], actual)) return true;
+  const options = operand as string[];
+  for (let index = 0; index < options.length; index += 1) {
+    if (matchesLowered(options[index], value)) return true;
   }
   return false;
 };
+
+/** Whether one request value satisfies one matcher; compared ignoring case. */
+const matchesValue = (matcher: ParamMatcher, actual: string): boolean =>
+  matchesLowered(matcher, actual.toLowerCase());
 
 /** The incoming request, reduced to the two things that decide the answer. */
 export interface CampaignRequest {
@@ -362,6 +371,13 @@ const isUsable = (route: CampaignRoute): boolean => {
   if (!isInternalPath(targetPath)) return false;
   // A wildcard names pages to match, never a page to serve.
   if (targetPath.indexOf('*') !== -1) return false;
+  // And the only wildcard a basePath takes is a trailing `/*`. A star anywhere
+  // else (`/blog*`, `/blog/**`) would be matched literally and silently never
+  // fire, which is the miss this package exists to avoid; dropping the rule is
+  // the same outcome with a consistent reason.
+  if (basePath.indexOf('*') !== -1 && !(isSectional(basePath) && basePath.indexOf('*') === basePath.length - 1)) {
+    return false;
+  }
 
   // Every matcher must be one the core acts on; a shape it does not know is a
   // content mistake, not something to guess at.
@@ -377,28 +393,37 @@ const isUsable = (route: CampaignRoute): boolean => {
 /**
  * How narrowly a rule describes traffic, as numbers to compare in order:
  * an exact page beats a section wildcard; among wildcards the longer prefix
- * wins; then more parameters; then more exact (non-pattern) parameters.
+ * wins; then more exact (plain, non-pattern) values; then more parameters
+ * that narrow at all; then more parameters of any kind.
+ *
+ * Exact values come before parameter count on purpose. A lone `*` means
+ * "present, whatever the value", and nearly every ad click carries
+ * `utm_source` and `utm_term`, so a rule naming two lone stars describes
+ * nearly everyone; counting it as two parameters would let that catch-all beat
+ * a rule naming the exact keyword, which is the broader rule winning.
  */
 const specificity = (route: CampaignRoute): number[] => {
   const basePath = normalizePath(route.basePath);
   const sectional = isSectional(basePath);
   const keys = Object.keys(route.matchParams);
   let exact = 0;
+  let narrowing = 0;
   for (let index = 0; index < keys.length; index += 1) {
     const matcher = route.matchParams[keys[index]];
     if (typeof matcher === 'string' && matcher.indexOf('*') === -1) exact += 1;
+    if (matcher !== '*') narrowing += 1;
   }
-  return [sectional ? 0 : 1, sectional ? basePath.length : 0, keys.length, exact];
+  return [sectional ? 0 : 1, sectional ? basePath.length : 0, exact, narrowing, keys.length];
 };
 
 /**
  * Which of two matching rules wins.
  *
- * **The narrower description wins**, because a rule naming `utm_term` AND
- * `utm_source` is describing a smaller slice of traffic than one naming
- * `utm_term` alone, a rule for `/pricing` is narrower than one for `/*`, and an
- * exact value is narrower than a pattern; the narrower description is the one
- * the marketer meant for that visitor. See `specificity` for the order.
+ * **The narrower description wins**: a rule for `/pricing` over one for `/*`,
+ * an exact keyword over a pattern, and a rule naming `utm_term` AND
+ * `utm_source` over one naming `utm_term` alone; the narrower description is
+ * the one the marketer meant for that visitor. See `specificity` for the
+ * order, and for why an exact value outranks a parameter count.
  *
  * On a genuine tie, the target path — chosen for being total and stable rather
  * than for meaning anything. Two equally specific rules is a mistake in the
