@@ -719,6 +719,18 @@ describe('createEndpointRouteSource', () => {
     expect(() => createEndpointRouteSource({ fetchImpl, origin: 'https://user:pw@rules.internal' })).toThrow(
       /must not carry credentials/
     );
+    // What canonicalisation alone would have let through: a password with no
+    // user, a scheme fetch cannot use, and the same shapes in the allowlist.
+    expect(() => createEndpointRouteSource({ fetchImpl, origin: 'https://:pw@rules.internal' })).toThrow(
+      /must not carry credentials/
+    );
+    expect(() => createEndpointRouteSource({ fetchImpl, origin: 'ftp://rules.internal' })).toThrow(/origin must be/);
+    expect(() => createEndpointRouteSource({ fetchImpl, trustedOrigins: ['ftp://www.example.com'] })).toThrow(
+      /trustedOrigins entry/
+    );
+    expect(() => createEndpointRouteSource({ fetchImpl, trustedOrigins: ['https://u:p@www.example.com'] })).toThrow(
+      /must not carry credentials/
+    );
     expect(() => createEndpointRouteSource({ fetchImpl, path: '/_tailor/rules' })).not.toThrow();
   });
 

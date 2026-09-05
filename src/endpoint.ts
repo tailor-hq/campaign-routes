@@ -203,6 +203,31 @@ const canonicalOrigin = (value: string): string | null => {
 };
 
 /**
+ * An origin the deployment CONFIGURED (`origin`, a `trustedOrigins` entry),
+ * held to what the message promises: absolute, http(s), no credentials. It
+ * throws at construction, where somebody is looking. `canonicalOrigin` alone
+ * accepts any scheme and drops credentials silently, so `ftp://host` or
+ * `https://:secret@host` would survive it and fail every read after deploy —
+ * a configuration mistake turned into a production outage with nothing
+ * saying why.
+ */
+const configuredOrigin = (value: string, what: string): string => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`campaign routes: ${what} must be an absolute http(s) origin, got ${JSON.stringify(value)}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`campaign routes: ${what} must be an absolute http(s) origin, got ${JSON.stringify(value)}`);
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error(`campaign routes: ${what} must not carry credentials; the endpoint is read without any`);
+  }
+  return url.origin;
+};
+
+/**
  * Whether a request-derived origin names somewhere only the server could reach.
  *
  * A forged Host header can name any hostname at all, and the fetch this source
@@ -485,18 +510,7 @@ export const createEndpointRouteSource = (
   // would otherwise fall through to request trust nobody asked for, and a
   // `trustedOrigins` entry without a scheme would be dropped silently and
   // refuse every request with only the one-time warning to say why.
-  const pinnedOrigin = config.origin === undefined ? undefined : canonicalOrigin(config.origin);
-  if (config.origin !== undefined && !pinnedOrigin) {
-    throw new Error(
-      `campaign routes: origin must be an absolute http(s) origin, got ${JSON.stringify(config.origin)}`
-    );
-  }
-  // Canonicalisation drops credentials silently, and a customer who gated the
-  // endpoint with basic auth would otherwise see `answered 401` forever with
-  // nothing saying why.
-  if (config.origin !== undefined && new URL(config.origin).username !== '') {
-    throw new Error('campaign routes: origin must not carry credentials; the endpoint is read without any');
-  }
+  const pinnedOrigin = config.origin === undefined ? undefined : configuredOrigin(config.origin, 'origin');
   // `origin + path` with a path that lost its leading slash parses as a
   // different host: `rules@evil.example` makes `https://site.test@evil.example`.
   if (config.path !== undefined && config.path.charAt(0) !== '/') {
@@ -505,17 +519,7 @@ export const createEndpointRouteSource = (
   // Normalised once, so `https://Example.com` and `https://example.com/` match
   // the origin a URL actually reports.
   const trustedOrigins = config.trustedOrigins
-    ? new Set(
-        config.trustedOrigins.map((value) => {
-          const canonical = canonicalOrigin(value);
-          if (canonical === null) {
-            throw new Error(
-              `campaign routes: trustedOrigins entry must be an absolute http(s) origin, got ${JSON.stringify(value)}`
-            );
-          }
-          return canonical;
-        })
-      )
+    ? new Set(config.trustedOrigins.map((value) => configuredOrigin(value, 'trustedOrigins entry')))
     : null;
   const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
   const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
