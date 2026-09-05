@@ -801,6 +801,34 @@ describe('createEndpointRouteSource', () => {
     expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('304 with no Location');
   });
 
+  it('refuses a payload whose declared length is more than it will read', async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': String(64 * 1024 * 1024) }),
+      json: async () => ({ routes: [ROUTE], paths: [] })
+    })) as unknown as typeof fetch;
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl, onError });
+    expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+    expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('more than this reads');
+  });
+
+  it('keeps a refused origin printable in the warning', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const source = createEndpointRouteSource({ fetchImpl: respondWith({ routes: [ROUTE], paths: [] }) });
+    source.pageExists('/x', 'not a url\nINJECTED LOG LINE');
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain('\n');
+    expect(String(warn.mock.calls[0]?.[0])).toContain('not a url?INJECTED');
+    warn.mockRestore();
+  });
+
+  it('treats every 127.x address as loopback, in the mapped hex form too', () => {
+    expect(isLoopbackOrigin('http://127.0.0.2:3000')).toBe(true);
+    expect(isLoopbackOrigin('http://[::ffff:7f00:2]:3000')).toBe(true);
+    expect(isLoopbackOrigin('http://[::ffff:a00:1]:3000')).toBe(false);
+  });
+
   it('bounds the reads in flight, so a burst of new origins cannot fan out into a burst of requests', async () => {
     // The cache size bounds what is remembered, not what is fetched: each new
     // origin starts a read before anything is evicted. Twelve origins arriving

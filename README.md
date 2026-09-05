@@ -127,8 +127,15 @@ content client is used:
 
 ```ts
 import { campaignRoutesPayload } from '@tailor-ai/campaign-routes/endpoint';
+import { CAMPAIGN_ROUTE_TYPE_ID, toCampaignRoutes } from '@tailor-ai/campaign-routes/contentful';
+import { client } from '@/lib/contentful'; // your existing Delivery client
 
 export const revalidate = 60;
+
+// Your CMS read. `toCampaignRoutes` turns Contentful entries into rules and
+// drops any it cannot use; the raw `getEntries` collection is not a rule list.
+const getCampaignRoutes = async () =>
+  toCampaignRoutes((await client.getEntries({ content_type: CAMPAIGN_ROUTE_TYPE_ID })).items, 'en-US');
 
 export async function GET() {
   const [rules, pages] = await Promise.all([getCampaignRoutes(), getAllPages()]);
@@ -136,10 +143,8 @@ export async function GET() {
 }
 ```
 
-`getCampaignRoutes()` is your CMS read. For Contentful that is
-`client.getEntries({ content_type: 'tailorCampaignRoute' })`, or
-`toCampaignRoutes()` from `@tailor-ai/campaign-routes/contentful` if you want the
-parsing done for you.
+`getAllPages()` is whatever already lists the pages your site serves; the
+second argument is how a rule whose page is not published yet is skipped.
 
 **Why a route handler and not a CMS read from the edge.** Middleware runs before
 your app, so your content SDK is not available to it — you need a route either

@@ -39,8 +39,13 @@
  * ```ts
  * // app/api/campaign-routes/route.ts
  * import { campaignRoutesPayload } from '@tailor-ai/campaign-routes/endpoint';
+ * import { CAMPAIGN_ROUTE_TYPE_ID, toCampaignRoutes } from '@tailor-ai/campaign-routes/contentful';
  *
  * export const revalidate = 60;
+ *
+ * // The raw `getEntries` collection is not a rule list; this is the shape that works.
+ * const getCampaignRoutes = async () =>
+ *   toCampaignRoutes((await client.getEntries({ content_type: CAMPAIGN_ROUTE_TYPE_ID })).items, 'en-US');
  *
  * export async function GET() {
  *   const [rules, pages] = await Promise.all([getCampaignRoutes(), getAllPages()]);

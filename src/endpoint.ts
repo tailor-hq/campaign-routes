@@ -323,7 +323,8 @@ export const isLoopbackOrigin = (origin: string): boolean => {
     host === 'localhost' ||
     host.endsWith('.localhost') ||
     host === '::1' ||
-    host === '::ffff:7f00:1' ||
+    // Any 127.x.x.x, in the hex form the URL parser gives an IPv4-mapped address.
+    host.startsWith('::ffff:7f') ||
     host.startsWith('127.')
   );
 };
@@ -406,11 +407,23 @@ const REFUSAL_ADVICE: Record<OriginRefusalReason, string> = {
     'no origin was given and none is pinned. Pass the request origin to getRoutes (the Next adapter does), or pin origin.'
 };
 
+/** An origin as it may appear in a log line: no control characters, bounded length. */
+const printable = (value: string): string =>
+  value.replace(/[\u0000-\u001f\u007f]/g, '?').slice(0, 200);
+
 const originRefused = (origin: string, reason: OriginRefusalReason): OriginRefusedError =>
   Object.assign(
-    new Error(`campaign-routes: refused to read rules from ${origin}: ${REFUSAL_ADVICE[reason]}`),
+    new Error(`campaign-routes: refused to read rules from ${printable(origin)}: ${REFUSAL_ADVICE[reason]}`),
     { kind: 'origin_refused' as const, origin, reason }
   );
+
+/**
+ * The largest rules payload a read will accept, so an endpoint that answers
+ * with something enormous (the customer's own bug, under every policy that
+ * fetches) is a failed read rather than an isolate out of memory. Ten
+ * thousand rules is about 1.4 MB; this leaves room for a very large site.
+ */
+const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 /**
  * Where a redirect from the rules endpoint may go: the same origin, and one
@@ -604,6 +617,15 @@ export const createEndpointRouteSource = (
             }
           }
           if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
+          // Declared length first, where the origin states one; a body with
+          // no length still parses, since the customer's own endpoint is the
+          // only thing any policy fetches.
+          const declared = response.headers && typeof response.headers.get === 'function'
+            ? Number(response.headers.get('content-length'))
+            : Number.NaN;
+          if (Number.isFinite(declared) && declared > MAX_PAYLOAD_BYTES) {
+            throw new Error('campaign routes endpoint answered with ' + String(declared) + ' bytes, more than this reads');
+          }
           const body: unknown = await response.json();
           if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
           // `paths` may be absent or null (unknown, protects nothing) or a list.
