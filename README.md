@@ -141,10 +141,12 @@ None of these is a regular expression, on purpose.
 | `origin` | the request's own origin | Pin where the rules are read from. Use it when self-hosting. |
 | `trustedOrigins` | none | The full origins this deployment answers on, e.g. `['https://www.example.com', 'https://example.com']`; a request for any other reads nothing. |
 | `ttlMs` | 60 s | How long rules are reused before a refresh. |
+| `timeoutMs` | 2.5 s | How long a single read may take before it is abandoned. |
 | `maxStaleMs` | 1 h | How long the last good rules keep serving while the endpoint is down; after that, visitors get their original page. |
 | `bootstrap` | none | Rules to serve before the first read, so a cold server's first visitor is personalized too. |
 | `onError` | none | Called on every failed read, for your own monitoring. |
 | `waitUntil` | none | Your runtime's hook to keep the background refresh alive (Cloudflare Workers, Vercel's edge runtime). |
+| `awaitStaleRefresh` | `false` | Make a stale read wait for its refresh instead of serving stale, for a runtime that freezes when the handler returns. |
 
 `campaignRouteFor(request, source, { onMatch })` calls `onMatch` when a
 campaign page is about to be served, so your own analytics can attribute the
@@ -189,7 +191,11 @@ const match = matchCampaignRoute(rules, { path, searchParams }); // → { target
 
 Give it the rules from wherever you can get them and act on the answer in
 your own middleware or worker. A second CMS is a `RouteSource` that turns its
-entries into the three fields above; the Contentful one is the model.
+entries into the three fields above; the Contentful one is the model. For a
+runtime with no app to put a route handler in, `createContentfulRouteSource`
+in `/contentful` reads the rules from the Delivery API directly; it is the
+one part of the package that holds a token, and it only ever sends it to
+Contentful's own hosts.
 
 ## Further reading
 
