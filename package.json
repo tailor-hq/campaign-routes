@@ -1,7 +1,7 @@
 {
   "name": "@tailor-ai/campaign-routes",
   "version": "0.1.0",
-  "description": "Serve the campaign page a visitor should get, from rules held in your own CMS. Pure, dependency-free, and small enough to run inside a CloudFront Function.",
+  "description": "Serve the campaign page a visitor should get, from rules your marketing team publishes in Contentful, on a Next.js site. Never calls Tailor, never redirects, never sets a cookie.",
   "keywords": [
     "personalization",
     "ab-testing",
@@ -52,7 +52,9 @@
   },
   "files": [
     "dist",
+    "docs",
     "README.md",
+    "SECURITY.md",
     "CHANGELOG.md",
     "LICENSE"
   ],

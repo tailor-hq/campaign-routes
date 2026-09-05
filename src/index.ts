@@ -1,20 +1,21 @@
 /**
  * `@tailor-ai/campaign-routes` — serve the campaign page a visitor should get,
- * from rules held in your own CMS.
+ * from rules your marketing team publishes in Contentful, on a Next.js site.
  *
- * The default entry is the **core only**: one pure function, no dependencies, no
- * network, no framework. That is deliberate — a CloudFront Function has a 10KB
- * code budget, and importing this must never drag an adapter in behind it.
+ * A Contentful + Next.js install uses three entry points, one per step of the
+ * README's "How it works":
  *
- * The adapters are separate entry points, so you take only the one your stack
- * uses:
+ * - `@tailor-ai/campaign-routes/contentful` — turn Contentful entries into
+ *   rules, inside your route handler
+ * - `@tailor-ai/campaign-routes/endpoint` — build the rules payload there, and
+ *   read it from the middleware
+ * - `@tailor-ai/campaign-routes/next` — decide per request, from `middleware.ts`
  *
- * - `@tailor-ai/campaign-routes/next` — Next.js middleware
- * - `@tailor-ai/campaign-routes/endpoint` — read the rules from your own app
- * - `@tailor-ai/campaign-routes/contentful` — shape Contentful entries into
- *   rules, and fetch them directly where a runtime has no better source
- *
- * `next` + `endpoint` is the pairing behind a real deploy.
+ * This default entry is the **decision alone**: one pure function, no
+ * dependencies, no network, no framework, for a site that is on neither. It is
+ * kept that small on purpose so importing it never drags an adapter in behind
+ * it, and so it runs anywhere JavaScript does, down to an edge function with a
+ * code budget.
  *
  * # What is deliberately NOT exported
  *
