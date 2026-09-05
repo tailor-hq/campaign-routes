@@ -15,28 +15,50 @@ brought — and leaves everyone else alone.
 No redirect, no flash, no client-side swap. A crawler that runs no JavaScript
 sees what a person sees.
 
+## How it works
+
+Three moving parts, and only the last two are code you write, once:
+
+1. **A rule lives in your CMS.** A Campaign Route entry says: on this page
+   (`basePath`), for a visitor whose URL carries these parameters
+   (`matchParams`), serve that page instead (`targetPath`). Marketers publish
+   and unpublish them; turning a campaign on or off is a publish, not a deploy.
+2. **Your app exposes its rules at one URL.** A route handler at
+   `/api/campaign-routes` reads the entries with the content client you already
+   have and returns them, together with the list of pages your site actually
+   serves. It is the only thing that talks to your CMS.
+3. **Middleware decides per request.** For a request that carries a query
+   string, it matches the URL against the rules and, on a hit, rewrites to the
+   campaign page. It gets the rules from `/api/campaign-routes`, keeps them in
+   its own memory for 60 seconds, and refreshes behind a response rather than
+   in front of one, so no visitor ever waits on the read.
+
+```
+marketer publishes     your route handler         middleware, per isolate      per request
+a Campaign Route  ───▶ /api/campaign-routes  ───▶ rules cached 60s, refreshed ───▶ match ───▶ rewrite
+in the CMS             returns rules + pages       behind the response              (or leave alone)
+```
+
+So when a marketer publishes or unpublishes a rule, every server that is
+handling traffic picks it up on its next refresh: live within a couple of
+minutes at the default TTL, with no deploy and no code change. The request
+that notices the cache has lapsed is still served the old rules, which is why
+it is "a couple" and not one.
+
 ## What ships
 
-Four entry points, and every one of them has run somewhere real:
+Four entry points, each one piece of the picture above:
 
-| Entry point | What it is |
+| Entry point | Its place in the flow |
 | --- | --- |
-| `.` | The matching core. Pure, no dependencies, no network, no framework. |
-| `/next` | Next.js middleware. |
-| `/endpoint` | Reads the rules from a route handler inside your own app. |
-| `/contentful` | Shapes Contentful entries into rules, and can fetch them directly. |
+| `@tailor-ai/campaign-routes` | Step 3's decision as a pure function: rules and a URL in, a target path or `null` out. No dependencies, no network, no framework. You call it directly only if you are not on Next.js. |
+| `/next` | Step 3 for Next.js: `campaignRouteFor(request, source)`, called from your `middleware.ts`. |
+| `/endpoint` | Both ends of step 2: `campaignRoutesPayload()` builds what the route handler returns, and `createEndpointRouteSource()` is how the middleware reads it. |
+| `/contentful` | Step 1's shape: turns Contentful entries into rules, inside your route handler — or, on a runtime that can, reads them from Contentful directly. |
 
-`/next` + `/endpoint` is the pairing behind a deployed site and the one to reach
-for first.
-
-**A CloudFront and Lambda@Edge adapter exists in
-[`examples/lambda-edge`](examples/lambda-edge), and is deliberately not
-published.** It shares this core and its tests, but it has never run in the
-Lambda@Edge runtime, and its own configuration example reads `process.env` —
-which that runtime does not provide. Copy it as a starting point rather than
-depending on it. It becomes a real entry point when a real deploy has proved
-it, which is a minor version away; shipping it first and removing it later
-would not be.
+The Next.js install below is `/next` + `/endpoint`, with `/contentful` doing
+the entry parsing if you want it to. A CloudFront and Lambda@Edge adapter
+exists as an unpublished example; see the note further down.
 
 ## Install
 
@@ -46,7 +68,7 @@ npm install @tailor-ai/campaign-routes
 
 ### Next.js
 
-Two files. `middleware.ts`:
+Two files, which are steps 3 and 2 above. `middleware.ts` is step 3:
 
 ```ts
 import { NextResponse, type NextRequest } from 'next/server';
@@ -81,8 +103,8 @@ export const config = {
 };
 ```
 
-and `app/api/campaign-routes/route.ts`, which is where your existing content
-client lives:
+and `app/api/campaign-routes/route.ts` is step 2, the one place your existing
+content client is used:
 
 ```ts
 import { campaignRoutesPayload } from '@tailor-ai/campaign-routes/endpoint';
@@ -116,6 +138,8 @@ a placeholder, and never let a failed page query become one.
 Not published. There is a working adapter in
 [`examples/lambda-edge`](examples/lambda-edge) — same core, same tests, driven
 in process against a real Contentful space — to copy into your own function.
+It becomes a real entry point once a real deploy has proved it, which is a
+minor version away; shipping it first and removing it later would not be.
 
 Read its header before you do. It has never run in Lambda@Edge, so everything
 that runtime contributes is unverified, and its configuration example reads
