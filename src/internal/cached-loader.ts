@@ -59,6 +59,24 @@ export interface CachedLoaderConfig<T> {
    * swallowed, since a broken logger must not take the page down.
    */
   onError?: (error: unknown) => void;
+  /**
+   * The runtime's way of keeping work alive past the response. A background
+   * refresh is a floating promise, and Cloudflare Workers and Vercel's edge
+   * runtime may cancel outstanding work once the response is sent; handed to
+   * `waitUntil`, it finishes. Without it nothing breaks — the next request
+   * starts another refresh — but under low traffic the rules lag past the
+   * TTL. A throw inside it is swallowed: a native `waitUntil` detached from
+   * its receiver throws `Illegal invocation`, and that must not cost a page.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Whether a stale read waits for its refresh instead of serving stale and
+   * refreshing behind it. Default `false`. For a runtime that freezes the
+   * execution environment the moment the handler returns (Lambda@Edge), where
+   * a background refresh may never run at all: the cost is one request per
+   * TTL per isolate paying the round trip, against unbounded staleness.
+   */
+  awaitStaleRefresh?: boolean;
 }
 
 const DEFAULT_MAX_STALE_MS = 60 * 60_000;
@@ -123,6 +141,17 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
     }
   };
 
+  /** Hand a background refresh to the runtime, where there is a runtime to hand it to. */
+  const keep = (running: Promise<T | null>): void => {
+    if (!config.waitUntil) return;
+    try {
+      config.waitUntil(running);
+    } catch {
+      // A detached native `waitUntil` throws; the refresh still runs as a
+      // floating promise, which is what it would have been anyway.
+    }
+  };
+
   const run = async (): Promise<T | null> => {
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -166,7 +195,10 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       // An outage has outlived the bound: keep trying behind the request, but
       // answer with nothing so the caller serves the page it was going to.
       if (tooStale()) {
-        if (!backingOff()) void refresh();
+        if (backingOff()) return null;
+        const running = refresh();
+        if (config.awaitStaleRefresh === true) return running;
+        keep(running);
         return null;
       }
 
@@ -185,9 +217,12 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       // take up to twice the TTL to appear, because the request that notices
       // the lapse is still served the old rules.
       if (cached !== null) {
-        // Deliberately not awaited. The `.catch` inside `refresh` is what keeps
-        // an unobserved rejection from becoming an unhandled one.
-        void refresh();
+        // Deliberately not awaited, unless the runtime cannot be trusted to run
+        // it later. The `.catch` inside `refresh` is what keeps an unobserved
+        // rejection from becoming an unhandled one.
+        const running = refresh();
+        if (config.awaitStaleRefresh === true) return running;
+        keep(running);
         return cached;
       }
 

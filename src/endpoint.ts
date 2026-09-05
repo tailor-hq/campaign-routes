@@ -116,6 +116,20 @@ export interface EndpointRouteSourceConfig {
    */
   onError?: (error: unknown) => void;
   /**
+   * Your runtime's way of keeping work alive past the response, so the refresh
+   * behind a stale read is not cancelled with it on Cloudflare Workers or
+   * Vercel's edge runtime. Wrap a native method rather than passing it
+   * detached; a throw inside it is swallowed. See the Contentful source for
+   * the per-request slot pattern.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Whether a stale read waits for its refresh rather than serving stale and
+   * refreshing behind it. Default `false`; for a runtime that freezes the
+   * moment the handler returns, where a background refresh may never run.
+   */
+  awaitStaleRefresh?: boolean;
+  /**
    * A payload to serve until the first real read lands.
    *
    * Ship it with the deploy and the first request of every new isolate is
@@ -384,6 +398,8 @@ export const createEndpointRouteSource = (
       timeoutMs,
       maxStaleMs: config.maxStaleMs,
       onError: config.onError,
+      waitUntil: config.waitUntil,
+      awaitStaleRefresh: config.awaitStaleRefresh,
       // The shipped rules are for this deploy, whichever hostname it answers on.
       bootstrap: config.bootstrap,
       load: async (signal) => {

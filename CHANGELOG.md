@@ -28,6 +28,11 @@ First release. Not yet published.
   an entry point: it has never run in that runtime, and a published export is a
   promise a README cannot walk back. It becomes an entry point once a real
   deploy has proved it.
+- `waitUntil` and `awaitStaleRefresh` on both sources: the first hands the
+  refresh behind a stale read to a runtime that would otherwise cancel it
+  (Cloudflare Workers, Vercel's edge runtime); the second makes a stale read
+  wait instead, for a runtime that freezes the moment the handler returns.
+- `maxStaleMs` and `onError` on both sources; see Security below.
 
 ### Security
 

@@ -179,6 +179,65 @@ describe('createCachedLoader', () => {
     });
   });
 
+  describe('keeping the background refresh alive', () => {
+    it('hands the refresh to waitUntil, so a runtime that cancels floating work still finishes it', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const kept: Promise<unknown>[] = [];
+      const load = jest.fn(async () => 'v');
+      const loader = createCachedLoader({
+        ttlMs: 1_000,
+        timeoutMs: 100,
+        load,
+        waitUntil: (promise) => {
+          kept.push(promise);
+        }
+      });
+      await loader.read();
+      // The first read blocks, so there is nothing to keep alive.
+      expect(kept).toHaveLength(0);
+      now += 1_001;
+      await loader.read();
+      expect(kept).toHaveLength(1);
+      await kept[0];
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it('survives a waitUntil that throws, which is what a detached native method does', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const load = jest.fn(async () => 'v');
+      const loader = createCachedLoader({
+        ttlMs: 1_000,
+        timeoutMs: 100,
+        load,
+        waitUntil: () => {
+          throw new TypeError('Illegal invocation');
+        }
+      });
+      await loader.read();
+      now += 1_001;
+      expect(await loader.read()).toBe('v');
+      await settle();
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for the refresh instead when awaitStaleRefresh is set', async () => {
+      // Lambda@Edge freezes the environment when the handler returns, so a
+      // refresh behind the response may never run; blocking one request per
+      // TTL is the price of never serving rules from whenever it last blocked.
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let value = 'first';
+      const load = jest.fn(async () => value);
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, load, awaitStaleRefresh: true });
+      expect(await loader.read()).toBe('first');
+      value = 'second';
+      now += 1_001;
+      expect(await loader.read()).toBe('second');
+    });
+  });
+
   describe('stale-while-revalidate', () => {
     it('answers immediately with the stale value and refreshes behind it', async () => {
       // The whole point: after the first load, no request ever waits. Blocking

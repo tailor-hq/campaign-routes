@@ -76,6 +76,35 @@ export interface ContentfulRouteSourceConfig {
    */
   onError?: (error: unknown) => void;
   /**
+   * Your runtime's way of keeping work alive past the response.
+   *
+   * After the first load a stale read is served at once and refreshed behind
+   * it, and that refresh is a floating promise. Cloudflare Workers and Vercel's
+   * edge runtime may cancel outstanding work once the response is sent; hand
+   * it here and it finishes. Without it nothing breaks — the next request
+   * starts another refresh — but under low traffic the rules lag past the TTL.
+   *
+   * **Wrap it; never pass a native method itself.** A Cloudflare
+   * `ExecutionContext`'s `waitUntil` throws `Illegal invocation` when detached
+   * from its receiver, and `ctx` does not exist when this module-scoped source
+   * is constructed. Keep a slot the handler writes per request, and close over
+   * it: `waitUntil: (p) => pending?.(p)`. A throw inside it is swallowed.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Whether a stale read waits for its refresh instead of serving stale and
+   * refreshing behind it. Default `false`.
+   *
+   * Set it on a runtime that freezes the execution environment the moment the
+   * handler returns, which is Lambda@Edge: a background refresh there may
+   * resume on some later invocation or never, so an isolate can go on serving
+   * rules from whenever it last blocked, with nothing stale-looking about it
+   * from the outside. The cost is one request per TTL per isolate paying the
+   * Contentful round trip, which is the right trade against unbounded
+   * staleness and the wrong one everywhere else.
+   */
+  awaitStaleRefresh?: boolean;
+  /**
    * How long a single fetch may take before it is abandoned. Default 2500ms.
    *
    * **Without a deadline the fail-open promise below is not one.** Failing open
@@ -246,6 +275,8 @@ export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig)
     timeoutMs,
     maxStaleMs: config.maxStaleMs,
     onError: config.onError,
+    waitUntil: config.waitUntil,
+    awaitStaleRefresh: config.awaitStaleRefresh,
     bootstrap: config.bootstrap,
     load: async (signal) => {
       const routes: CampaignRoute[] = [];

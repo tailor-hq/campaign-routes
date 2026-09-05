@@ -225,7 +225,11 @@ something a crawler *does* send, so don't.
   The trade: a newly published campaign can take up to twice the TTL to appear,
   because the request that notices the cache has lapsed is still served the old
   rules. Ship a `bootstrap` payload if you want the first request of a cold
-  isolate personalized too.
+  isolate personalized too. On Cloudflare Workers or Vercel's edge runtime,
+  pass the runtime's own `waitUntil` so the refresh behind a response is not
+  cancelled with it; on a runtime that freezes the moment the handler returns,
+  such as Lambda@Edge, pass `awaitStaleRefresh: true` and accept one blocking
+  read per TTL per isolate rather than unbounded staleness.
 - **It keeps serving through an outage, for an hour.** When your CMS or
   endpoint stops answering, the last good rules keep serving and the upstream
   is retried with a growing wait. After `maxStaleMs` (default one hour) of
