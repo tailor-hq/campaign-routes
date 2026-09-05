@@ -219,6 +219,29 @@ rewrite off-site, the caching and the failure behaviour are all in this
 package, versioned and tested. The CMS holds three fields per campaign, and a
 person who can publish a page can publish one.
 
+## How far it scales
+
+The rules live in memory, one copy per server isolate, refreshed once per TTL.
+Two costs grow with the number of rules: the payload each isolate re-reads
+every minute, and the per-request scan, which is linear and runs only for
+requests that carry a query string. Measured on a laptop (an edge isolate is a
+few times slower and has 128 MB):
+
+| Rules | Payload per refresh | Refresh (parse + validate) | Memory held | Per campaign request |
+| --- | --- | --- | --- | --- |
+| 1,000 | 151 KB | 0.7 ms | 228 KB | 0.13 ms |
+| 10,000 | 1.4 MB | 6.5 ms | 2.2 MB | 1.4 ms |
+| 50,000 | 7.3 MB | 38 ms | 11 MB | 7 ms |
+
+A rule is one campaign on one page, so a site with hundreds of pages and a
+few campaigns each is in the low thousands, where none of this registers.
+Past about 10,000 the per-minute payload and the per-request scan are worth
+looking at, and that is also where the Contentful source stops on its own: it
+reads at most ten pages of 1,000 entries, so a space with more rules than that
+routes on the first 10,000. If a site ever gets there, indexing rules by
+`basePath` turns the scan into a lookup, and the sources are where that change
+would go.
+
 ## Knowing when a campaign served
 
 The package sends nothing anywhere. That also means nothing in *your* stack knows
