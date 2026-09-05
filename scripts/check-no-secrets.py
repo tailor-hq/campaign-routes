@@ -24,7 +24,9 @@ import re
 import subprocess
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+# The repository to scan: this one, or the directory named on the command
+# line, which is how the test suite points it at a fixture.
+ROOT = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parent.parent
 
 # (pattern, why it matters). Deliberately generic: a credential looks the same
 # whoever issued it.

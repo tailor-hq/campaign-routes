@@ -73,7 +73,12 @@ the literal check, and what stops that fetch is the policy above — nothing is
 read under `refuse`, the platform vouched for the name under `platform`, and
 only the names you listed are read under `trustedOrigins`. Reads in flight are
 capped across all origins, so a burst of forged Hosts cannot fan out into a
-burst of server-side requests.
+burst of server-side requests. The fetch itself never follows a redirect off
+the origin it was checked against (one same-origin hop is allowed, for a Next
+app with `trailingSlash: true`), so an endpoint that answers `302 Location:
+http://169.254.169.254/` is a failed read, not a request. And a refusal is
+never silent: the console hears about the first one, and `onError` is handed
+every refused origin with the reason (`kind: 'origin_refused'`).
 
 **Self-hosting with `next start`: pass `origin`**, the address the app listens
 on (`http://localhost:3000`). The origin the middleware sees there is the one

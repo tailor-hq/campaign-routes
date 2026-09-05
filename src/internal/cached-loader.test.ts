@@ -214,7 +214,7 @@ describe('createCachedLoader', () => {
       expect(load).toHaveBeenCalledTimes(2);
     });
 
-    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('falls back to the default deadline for %p', async (timeoutMs) => {
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0])('falls back to the default deadline for %p', async (timeoutMs) => {
       // setTimeout(NaN) fires at once: a real deadline lets a 20ms read land.
       const load = jest.fn(
         (signal: AbortSignal) =>

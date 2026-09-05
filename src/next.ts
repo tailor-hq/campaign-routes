@@ -60,8 +60,9 @@
  * notices. `campaignRouteFor` picks the source's `pageExists` up on its own, so
  * the protection is on by default rather than something to know to wire up.
  *
- * The `api/` exclusion in the matcher is not decoration either: without it the
- * middleware rewrites the very request it makes to read its own rules.
+ * The `api/` exclusion in the matcher saves a middleware invocation per rules
+ * read and per API call. It is not what prevents a loop: the middleware's own
+ * read carries no query string, so it is answered below before any lookup.
  *
  * # `nextUrl.clone()`, never `new URL(target, request.url)`
  *

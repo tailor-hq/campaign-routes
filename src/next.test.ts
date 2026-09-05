@@ -95,10 +95,47 @@ describe('campaignRouteFor', () => {
       expect(warn).toHaveBeenCalledTimes(1);
       warn.mockRestore();
     } finally {
-      process.env.NODE_ENV = savedNodeEnv;
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = savedNodeEnv;
       if (savedVercel !== undefined) process.env.VERCEL = savedVercel;
       if (savedNetlify !== undefined) process.env.NETLIFY = savedNetlify;
     }
+  });
+
+  it('tells onMatch which rule won, with the paths and parameters it needs', async () => {
+    // The adapter's wiring, not the notifier's: a version that dropped the
+    // notifyMatch call would pass every on-match unit test.
+    const onMatch = jest.fn();
+    await campaignRouteFor(
+      request('https://example.com/product/analytics?utm_term=enterprise+plan&gclid=x'),
+      source(),
+      { onMatch }
+    );
+    expect(onMatch).toHaveBeenCalledTimes(1);
+    expect(onMatch.mock.calls[0]?.[0]).toEqual({
+      requestedPath: '/product/analytics',
+      targetPath: '/product/analytics-enterprise-plan',
+      matchParams: { utm_term: 'enterprise plan' },
+      route: ROUTES[0]
+    });
+  });
+
+  it('asks the source about the page on the same origin it read the rules for', async () => {
+    const pageExists = jest.fn(() => true);
+    await campaignRouteFor(
+      request('https://preview.example.com/product/analytics?utm_term=enterprise+plan'),
+      { getRoutes: () => ROUTES, pageExists }
+    );
+    expect(pageExists).toHaveBeenCalledWith('/product/analytics-enterprise-plan', 'https://preview.example.com');
+  });
+
+  it('is unmoved by a __proto__ query key', async () => {
+    const target = await campaignRouteFor(
+      request('https://example.com/product/analytics?__proto__=polluted&utm_term=enterprise+plan'),
+      source()
+    );
+    expect(target).toBe('/product/analytics-enterprise-plan');
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
   it('does not touch the rule source for a request with no query string', async () => {

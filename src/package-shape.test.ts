@@ -153,5 +153,8 @@ describeBuilt('the tarball', () => {
     // Tests, configs and the source tree are not a customer's business.
     expect(files.filter((f) => f.endsWith('.test.js') || f.endsWith('.test.ts'))).toEqual([]);
     expect(files.filter((f) => f.startsWith('src/'))).toEqual([]);
+    // A map without its sources only points the customer's editor at a file
+    // they do not have.
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });

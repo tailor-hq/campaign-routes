@@ -28,8 +28,10 @@
     "emitDeclarationOnly": true,
     "removeComments": false,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    // No maps: the tarball carries no `src/`, so a map would only point every
+    // "go to definition" at a file the customer does not have.
+    "declarationMap": false,
+    "sourceMap": false,
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,

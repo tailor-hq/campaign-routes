@@ -53,7 +53,9 @@ First release. Not yet published.
   (private ranges, link-local, carrier-grade NAT, `0.0.0.0`, the IPv6
   unspecified and NAT64 forms, credentials, non-http) is refused under every
   policy. An `origin` or `trustedOrigins` entry that is not an absolute
-  origin throws at construction.
+  origin throws at construction. The endpoint fetch never follows a redirect
+  off its own origin (one same-origin hop, for `trailingSlash: true`), and a
+  refused origin is reported to `onError` with its reason.
 - A duration that is not one (`NaN`, `Infinity`, negative) falls back to its
   default rather than silently disabling the cache, the outage bound or every
   fetch, and the outage bound is never shorter than the TTL.

@@ -154,7 +154,9 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   let consecutiveFailures = 0;
   let lastFailureAt = 0;
   const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
-  const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
+  // A zero deadline aborts every read before it starts, and `Number('')` is 0,
+  // so a variable that is set but empty must fall back like an absent one.
+  const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   // Never shorter than the TTL: below it `read` (which checks freshness first)
   // and `peek` (which checks the bound first) would disagree, and `pageExists`
   // would answer "unknown" for rules `getRoutes` was still serving.
@@ -211,7 +213,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       // A failed read does NOT update `cachedAt`, so the next caller retries
       // rather than waiting out a TTL on an error — after the backoff above.
       .catch((error: unknown) => {
-        if (isDeferredRead(error)) return cached;
+        if (isDeferredRead(error)) return tooStale() ? null : cached;
         consecutiveFailures += 1;
         lastFailureAt = Date.now();
         report(error);

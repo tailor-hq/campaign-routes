@@ -316,9 +316,68 @@ export type RequestOriginPolicy = 'platform' | 'development' | 'refuse';
 export const requestOriginPolicy = (
   env: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {}
 ): RequestOriginPolicy => {
-  if (env.VERCEL || env.NETLIFY) return 'platform';
+  // The build's own word comes first: `next dev` sets NODE_ENV=development and
+  // is never the platform, whatever `vercel env pull` left in .env.local (it
+  // writes VERCEL=1 alongside the project's variables).
   if (env.NODE_ENV === 'development' || env.NODE_ENV === 'test') return 'development';
+  if (env.VERCEL || env.NETLIFY) return 'platform';
   return 'refuse';
+};
+
+export type OriginRefusalReason =
+  | 'policy'
+  | 'allowlist'
+  | 'unsafe-address'
+  | 'loopback-on-platform'
+  | 'malformed';
+
+/**
+ * What `onError` is handed when a request origin is refused: the origin, and
+ * why. Refusing switches every campaign off for that hostname, and the one
+ * `console.warn` the source prints is consumed by the first refusal — on an
+ * internet-facing self-host that is a scanner's bogus Host, not the customer's
+ * real one — so the customer's own monitoring is told as well, once per
+ * origin per isolate.
+ */
+export interface OriginRefusedError extends Error {
+  kind: 'origin_refused';
+  origin: string;
+  reason: OriginRefusalReason;
+}
+
+const REFUSAL_ADVICE: Record<OriginRefusalReason, string> = {
+  policy:
+    'nothing vouches for a request origin here (NODE_ENV is not development, and this is not Vercel or Netlify). Self-hosting? Pass origin, the address this app listens on (e.g. http://localhost:3000). On a platform with several real hostnames, pass trustedOrigins.',
+  allowlist:
+    'it is not in trustedOrigins. Add it there if this site really answers on it; otherwise this is a request that was right to refuse.',
+  'unsafe-address':
+    'it names a private or link-local address, carries credentials, or is not http(s), which is refused under every policy. Pin origin if the endpoint really lives there.',
+  'loopback-on-platform':
+    'loopback is refused on a platform deployment. Pin origin if a local endpoint is intended.',
+  malformed: 'it is not an absolute http(s) origin.'
+};
+
+const originRefused = (origin: string, reason: OriginRefusalReason): OriginRefusedError =>
+  Object.assign(
+    new Error(`campaign-routes: refused to read rules from ${origin}: ${REFUSAL_ADVICE[reason]}`),
+    { kind: 'origin_refused' as const, origin, reason }
+  );
+
+/**
+ * Where a redirect from the rules endpoint may go: the same origin, and one
+ * hop. A Next app with `trailingSlash: true` answers `/api/campaign-routes`
+ * with a 308 to the slash form, and that install must not fail closed. Anywhere
+ * else is a failed read: following it would hand the address check a
+ * destination the endpoint chose, after the check had already said yes to the
+ * public hostname.
+ */
+const sameOriginRedirect = (location: string, origin: string): string | null => {
+  try {
+    const next = new URL(location, origin);
+    return next.origin === origin ? next.toString() : null;
+  } catch {
+    return null;
+  }
 };
 
 /**
@@ -391,10 +450,10 @@ export const createEndpointRouteSource = (
   // would otherwise fall through to request trust nobody asked for, and a
   // `trustedOrigins` entry without a scheme would be dropped silently and
   // refuse every request with only the one-time warning to say why.
-  const pinnedOrigin = config.origin;
-  if (pinnedOrigin !== undefined && canonicalOrigin(pinnedOrigin) === null) {
+  const pinnedOrigin = config.origin === undefined ? undefined : canonicalOrigin(config.origin);
+  if (config.origin !== undefined && !pinnedOrigin) {
     throw new Error(
-      `campaign routes: origin must be an absolute http(s) origin, got ${JSON.stringify(pinnedOrigin)}`
+      `campaign routes: origin must be an absolute http(s) origin, got ${JSON.stringify(config.origin)}`
     );
   }
   // Normalised once, so `https://Example.com` and `https://example.com/` match
@@ -422,19 +481,31 @@ export const createEndpointRouteSource = (
   let activeLoads = 0;
   const policy = requestOriginPolicy();
   let warnedRefusal = false;
+  // Origins already reported through `onError`, so a scanner hammering one
+  // bogus Host does not become one error per request; bounded like the cache.
+  const reportedRefusals = new Set<string>();
 
   /**
-   * Refuse, and say so once. This package is otherwise silent on purpose, but
-   * a refusal here switches every campaign off for that hostname with nothing
-   * else anywhere reporting it, and the fix is one line of configuration —
-   * exactly the silent miss the rest of the package spends its care avoiding.
+   * Refuse, and say so. This package is otherwise silent on purpose, but a
+   * refusal here switches every campaign off for that hostname, and the fix is
+   * one line of configuration — exactly the silent miss the rest of the package
+   * spends its care avoiding. The console hears about it once; the customer's
+   * `onError` hears about every origin, with the reason.
    */
-  const refuse = (origin: string): null => {
+  const refuse = (origin: string, reason: OriginRefusalReason): null => {
+    const error = originRefused(origin, reason);
+    if (config.onError && !reportedRefusals.has(origin)) {
+      if (reportedRefusals.size >= MAX_ORIGINS) reportedRefusals.clear();
+      reportedRefusals.add(origin);
+      try {
+        config.onError(error);
+      } catch {
+        // A customer's error hook must not take the page down.
+      }
+    }
     if (!warnedRefusal && typeof console !== 'undefined') {
       warnedRefusal = true;
-      console.warn(
-        `campaign-routes: refused to read rules from ${origin}. Self-hosting? Pass origin, the address this app listens on (e.g. http://localhost:3000), to createEndpointRouteSource. On a platform with several real hostnames, pass trustedOrigins instead.`
-      );
+      console.warn(error.message);
     }
     return null;
   };
@@ -463,7 +534,20 @@ export const createEndpointRouteSource = (
         if (activeLoads >= MAX_CONCURRENT_LOADS) throw deferredRead();
         activeLoads += 1;
         try {
-          const response = await doFetch(origin + path, { signal });
+          // `redirect: 'manual'`, never follow: the address check ran on the
+          // origin, and a redirect is the endpoint choosing a new destination
+          // after that check said yes. One same-origin hop is allowed, for a
+          // Next app with `trailingSlash: true`; anything else is a failed read.
+          let response = await doFetch(origin + path, { signal, redirect: 'manual' });
+          if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get('location');
+            const next = location === null ? null : sameOriginRedirect(location, origin);
+            if (next === null) throw new Error('campaign routes endpoint redirected off its own origin');
+            response = await doFetch(next, { signal, redirect: 'manual' });
+            if (response.status >= 300 && response.status < 400) {
+              throw new Error('campaign routes endpoint redirected twice');
+            }
+          }
           if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
           const body: unknown = await response.json();
           if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
@@ -491,13 +575,19 @@ export const createEndpointRouteSource = (
   const resolveOrigin = (origin?: string): string | null => {
     if (pinnedOrigin) return pinnedOrigin;
     if (typeof origin === 'string' && origin.length > 0) {
+      // The canonical origin is what is fetched and what keys the cache, so a
+      // caller passing a path or different casing lands on the same entry.
+      const canonical = canonicalOrigin(origin);
+      if (canonical === null) return refuse(origin, 'malformed');
       if (trustedOrigins) {
-        return trustedOrigins.has(canonicalOrigin(origin) ?? '') ? origin : refuse(origin);
+        return trustedOrigins.has(canonical) ? canonical : refuse(canonical, 'allowlist');
       }
-      if (policy === 'refuse') return refuse(origin);
-      if (isRefusedRequestOrigin(origin)) return refuse(origin);
-      if (policy === 'platform' && isLoopbackOrigin(origin)) return refuse(origin);
-      return origin;
+      if (policy === 'refuse') return refuse(canonical, 'policy');
+      // Checked on the value as given: canonicalisation drops credentials,
+      // and an origin that carried them is refused, not cleaned.
+      if (isRefusedRequestOrigin(origin)) return refuse(canonical, 'unsafe-address');
+      if (policy === 'platform' && isLoopbackOrigin(canonical)) return refuse(canonical, 'loopback-on-platform');
+      return canonical;
     }
     return lastOrigin.length > 0 ? lastOrigin : null;
   };

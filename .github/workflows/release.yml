@@ -56,9 +56,10 @@ jobs:
             exit 1
           fi
 
-      # `--access restricted` keeps it private while the repository is.
-      # Change to `public` in the same commit that flips `private` in
-      # package.json, so the two can never disagree.
+      # `"private": true` in package.json is the gate: npm refuses to publish
+      # at all while it is set, whatever `--access` says. `--access` is only
+      # the visibility once that flips. Change both in the same commit, so the
+      # two can never disagree.
       - run: npm publish --access restricted --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

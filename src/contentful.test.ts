@@ -247,6 +247,24 @@ describe('createContentfulRouteSource', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('hands the runtime hooks through to the loader', async () => {
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const waitUntil = jest.fn();
+    const source = createContentfulRouteSource({
+      spaceId: 's',
+      deliveryToken: 't',
+      fetchImpl: respondWith([entry(ROUTE_FIELDS)]),
+      waitUntil,
+      ttlMs: 1_000
+    });
+    await source.getRoutes();
+    now += 1_001;
+    await source.getRoutes();
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    clock.mockRestore();
+  });
+
   it('hands out a frozen array, since every caller gets the same one', async () => {
     // The callers are code we do not control. A customer's helper sorting this
     // in place would corrupt every later request on that isolate.

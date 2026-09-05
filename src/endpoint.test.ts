@@ -464,6 +464,10 @@ describe('createEndpointRouteSource', () => {
       // or a Netlify edge function in production.
       expect(requestOriginPolicy({})).toBe('refuse');
       expect(requestOriginPolicy({ NODE_ENV: 'staging' })).toBe('refuse');
+      // `vercel env pull` writes VERCEL=1 into .env.local, and `next dev` then
+      // loads it: the build's own word wins, or every Vercel-linked project
+      // would refuse its own loopback in development.
+      expect(requestOriginPolicy({ VERCEL: '1', NODE_ENV: 'development' })).toBe('development');
       expect(requestOriginPolicy({ NODE_ENV: 'production' })).toBe('refuse');
     });
 
@@ -498,6 +502,34 @@ describe('createEndpointRouteSource', () => {
       expect(isLoopbackOrigin('http://localhost:3000')).toBe(true);
       expect(isLoopbackOrigin('http://[::1]:3000')).toBe(true);
       expect(isLoopbackOrigin('https://www.example.com')).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('in development on a Vercel-linked project, still reads its own loopback', async () => {
+      process.env.NODE_ENV = 'development';
+      process.env.VERCEL = '1';
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ fetchImpl });
+      expect(await source.getRoutes('http://localhost:3000')).toEqual([ROUTE]);
+    });
+
+    it('tells onError which origin was refused and why, once per origin', async () => {
+      process.env.NODE_ENV = 'production';
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const onError = jest.fn();
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ fetchImpl, onError });
+      await source.getRoutes('https://scanner.example');
+      await source.getRoutes('https://scanner.example');
+      await source.getRoutes('https://www.example.com');
+      expect(onError).toHaveBeenCalledTimes(2);
+      const first = onError.mock.calls[0]?.[0] as { kind: string; origin: string; reason: string; message: string };
+      expect(first.kind).toBe('origin_refused');
+      expect(first.origin).toBe('https://scanner.example');
+      expect(first.reason).toBe('policy');
+      expect(first.message).toContain('trustedOrigins');
+      // The console heard about it once; the monitoring heard about each origin.
+      expect(warn).toHaveBeenCalledTimes(1);
       warn.mockRestore();
     });
 
@@ -538,6 +570,94 @@ describe('createEndpointRouteSource', () => {
     expect(isRefusedRequestOrigin('http://metadata.google.internal')).toBe(false);
     expect(isRefusedRequestOrigin('http://[::]')).toBe(true);
     expect(isRefusedRequestOrigin('http://[64:ff9b::a9fe:a9fe]')).toBe(true);
+  });
+
+  describe('a redirecting endpoint', () => {
+    const redirectTo = (location: string, status = 302) => ({
+      ok: false,
+      status,
+      headers: new Headers({ location }),
+      json: async () => ({})
+    });
+
+    it('does not follow a redirect off its own origin, so the address check cannot be stepped around', async () => {
+      // The check said yes to a public hostname; a 302 from there to a metadata
+      // address is the endpoint choosing a destination after the check ran.
+      const fetchImpl = jest.fn(async () => redirectTo('http://169.254.169.254/latest/meta-data/')) as unknown as typeof fetch;
+      const onError = jest.fn();
+      const source = createEndpointRouteSource({ fetchImpl, onError });
+      expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('redirected off its own origin');
+    });
+
+    it('follows one same-origin hop, which is what trailingSlash: true answers with', async () => {
+      const fetchImpl = jest.fn(async (url: string) =>
+        url.endsWith('/api/campaign-routes')
+          ? redirectTo('/api/campaign-routes/', 308)
+          : { ok: true, status: 200, json: async () => ({ routes: [ROUTE], paths: [] }) }
+      ) as unknown as typeof fetch;
+      const source = createEndpointRouteSource({ fetchImpl });
+      expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+      expect((fetchImpl as unknown as jest.Mock).mock.calls.map((call) => call[0])).toEqual([
+        'https://www.example.com/api/campaign-routes',
+        'https://www.example.com/api/campaign-routes/'
+      ]);
+      // And the fetch asked for the redirect rather than letting fetch follow it.
+      expect((fetchImpl as unknown as jest.Mock).mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    });
+
+    it('gives up on a second redirect', async () => {
+      const fetchImpl = jest.fn(async () => redirectTo('/api/campaign-routes/', 308)) as unknown as typeof fetch;
+      const source = createEndpointRouteSource({ fetchImpl });
+      expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('tells onError about an endpoint that answers with an error status', async () => {
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl: respondWith({}, false), onError });
+    expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+    expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('answered 500');
+  });
+
+  it('keeps a recently used origin and evicts the least recently used, not the oldest', async () => {
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl });
+    for (let index = 0; index < 8; index += 1) {
+      await source.getRoutes(`https://host-${index}.example`);
+    }
+    // Touch the oldest, then add a ninth: a FIFO map would evict host-0.
+    await source.getRoutes('https://host-0.example');
+    await source.getRoutes('https://host-8.example');
+    const before = (fetchImpl as unknown as jest.Mock).mock.calls.length;
+    await source.getRoutes('https://host-0.example');
+    expect((fetchImpl as unknown as jest.Mock).mock.calls.length).toBe(before);
+    await source.getRoutes('https://host-1.example');
+    expect((fetchImpl as unknown as jest.Mock).mock.calls.length).toBe(before + 1);
+  });
+
+  it('hands the runtime hooks through to the loader', async () => {
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const waitUntil = jest.fn();
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl, waitUntil, ttlMs: 1_000 });
+    await source.getRoutes('https://www.example.com');
+    now += 1_001;
+    await source.getRoutes('https://www.example.com');
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    clock.mockRestore();
+  });
+
+  it('refuses the addresses the URL parser normalises into private ones', () => {
+    // Shorthand IPv4 (`0xa000005`, `167772165`) and the hex form of a mapped
+    // link-local address all arrive as something the range check would miss
+    // without normalisation; pin that it does not.
+    expect(isRefusedRequestOrigin('http://0xa000005')).toBe(true);
+    expect(isRefusedRequestOrigin('http://167772165')).toBe(true);
+    expect(isRefusedRequestOrigin('http://[::ffff:a9fe:a9fe]')).toBe(true);
   });
 
   it('bounds the reads in flight, so a burst of new origins cannot fan out into a burst of requests', async () => {
