@@ -226,6 +226,13 @@ something a crawler *does* send, so don't.
   because the request that notices the cache has lapsed is still served the old
   rules. Ship a `bootstrap` payload if you want the first request of a cold
   isolate personalized too.
+- **It keeps serving through an outage, for an hour.** When your CMS or
+  endpoint stops answering, the last good rules keep serving and the upstream
+  is retried with a growing wait. After `maxStaleMs` (default one hour) of
+  failed reads every visitor gets their original page until a read succeeds,
+  so a campaign you unpublished to pull bad content cannot outlive an outage by
+  more than that. Pass `onError` to hear about every failed read from your own
+  monitoring; the package itself logs nothing.
 
 ## Next.js version note
 

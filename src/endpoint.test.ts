@@ -221,6 +221,30 @@ describe('createEndpointRouteSource', () => {
     expect(again).toEqual(ROUTE);
   });
 
+  it('stops serving stale rules once an outage outlives maxStaleMs, and tells onError along the way', async () => {
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    let failing = false;
+    const fetchImpl = jest.fn(async () => {
+      if (failing) throw new Error('endpoint down');
+      return { ok: true, status: 200, json: async () => ({ routes: [ROUTE], paths: [] }) };
+    }) as unknown as typeof fetch;
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl, onError, ttlMs: 1_000, maxStaleMs: 5_000 });
+
+    expect(await source.getRoutes('https://site.test')).toEqual([ROUTE]);
+    failing = true;
+    now += 1_001;
+    expect(await source.getRoutes('https://site.test')).toEqual([ROUTE]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('endpoint down');
+
+    now += 5_000;
+    expect(await source.getRoutes('https://site.test')).toEqual([]);
+    clock.mockRestore();
+  });
+
   it('hands every caller the same frozen rules, so nobody can corrupt the cache', async () => {
     // Every request on the isolate gets these arrays by reference, and the
     // callers are the customer's own code. The Contentful source freezes for

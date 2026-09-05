@@ -64,6 +64,18 @@ export interface ContentfulRouteSourceConfig {
    */
   ttlMs?: number;
   /**
+   * How long the last good rules keep serving while Contentful is unreachable.
+   * Default one hour. Past it, every request is served its original page until
+   * a read succeeds, so a campaign somebody unpublished to pull bad content
+   * cannot outlive an outage by more than this.
+   */
+  maxStaleMs?: number;
+  /**
+   * Told about every failed read, so your own monitoring can know the rules
+   * are going stale. Never awaited, and a throw inside it is swallowed.
+   */
+  onError?: (error: unknown) => void;
+  /**
    * How long a single fetch may take before it is abandoned. Default 2500ms.
    *
    * **Without a deadline the fail-open promise below is not one.** Failing open
@@ -232,6 +244,8 @@ export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig)
   const loader = createCachedLoader<CampaignRoute[]>({
     ttlMs,
     timeoutMs,
+    maxStaleMs: config.maxStaleMs,
+    onError: config.onError,
     bootstrap: config.bootstrap,
     load: async (signal) => {
       const routes: CampaignRoute[] = [];

@@ -45,7 +45,23 @@ export interface CachedLoaderConfig<T> {
    * shipped copy is only ever what is served while that is in flight.
    */
   bootstrap?: T;
+  /**
+   * How long a last-good value may keep serving while refreshes fail, in ms.
+   * Default one hour. Past it, reads answer with nothing and the caller falls
+   * back to the page it was going to serve, so a campaign somebody withdrew
+   * cannot outlive an outage by more than this. A bootstrap is exempt: it is
+   * the floor until the first real read lands, however long that takes.
+   */
+  maxStaleMs?: number;
+  /**
+   * Told about every failed refresh, so the customer's own monitoring can
+   * know the rules are going stale. Never awaited; a throw inside it is
+   * swallowed, since a broken logger must not take the page down.
+   */
+  onError?: (error: unknown) => void;
 }
+
+const DEFAULT_MAX_STALE_MS = 60 * 60_000;
 
 export interface CachedLoader<T> {
   /**
@@ -88,11 +104,24 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   let inFlight: Promise<T | null> | null = null;
   let consecutiveFailures = 0;
   let lastFailureAt = 0;
+  const maxStaleMs = config.maxStaleMs ?? DEFAULT_MAX_STALE_MS;
 
   const backoffMs = (): number =>
     Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10));
   const backingOff = (): boolean =>
     consecutiveFailures > 0 && Date.now() - lastFailureAt < backoffMs();
+  // `cachedAt` of 0 is a bootstrap that no real read has replaced yet, and it
+  // is served regardless: it is the floor, not a value that can go stale.
+  const tooStale = (): boolean => cachedAt > 0 && Date.now() - cachedAt > maxStaleMs;
+
+  const report = (error: unknown): void => {
+    if (!config.onError) return;
+    try {
+      config.onError(error);
+    } catch {
+      // A customer's error hook must not take the page down.
+    }
+  };
 
   const run = async (): Promise<T | null> => {
     const controller = new AbortController();
@@ -116,10 +145,11 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
     inFlight = run()
       // A failed read does NOT update `cachedAt`, so the next caller retries
       // rather than waiting out a TTL on an error — after the backoff above.
-      .catch(() => {
+      .catch((error: unknown) => {
         consecutiveFailures += 1;
         lastFailureAt = Date.now();
-        return cached;
+        report(error);
+        return tooStale() ? null : cached;
       })
       .finally(() => {
         inFlight = null;
@@ -128,10 +158,17 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   };
 
   return {
-    peek: () => cached,
+    peek: () => (tooStale() ? null : cached),
     read: async () => {
       const fresh = cached !== null && Date.now() - cachedAt < config.ttlMs;
       if (fresh) return cached;
+
+      // An outage has outlived the bound: keep trying behind the request, but
+      // answer with nothing so the caller serves the page it was going to.
+      if (tooStale()) {
+        if (!backingOff()) void refresh();
+        return null;
+      }
 
       // Inside a failure backoff the upstream is left alone: whatever is in
       // hand is the answer, and nothing being in hand is the answer too.

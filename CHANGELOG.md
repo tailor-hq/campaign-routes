@@ -54,6 +54,12 @@ First release. Not yet published.
 - A failing upstream is left alone for a short, doubling wait (1s to 30s)
   while the last good rules keep serving, so a fast 429 or 500 cannot turn
   every page request into an upstream request.
+- An outage is bounded: after `maxStaleMs` (default one hour) of failed reads
+  both sources answer with no rules, so every visitor gets their original page
+  and a campaign somebody unpublished cannot outlive the outage by more than
+  that. A shipped `bootstrap` is exempt until the first real read lands.
+  `onError` on both sources reports every failed read to the customer's own
+  monitoring, and a throw inside it is swallowed.
 - `onMatch`, called when a campaign page is about to be served, so your own
   analytics can attribute a conversion to the campaign. Never awaited, never
   able to throw — including an `async` callback, whose rejection is observed for

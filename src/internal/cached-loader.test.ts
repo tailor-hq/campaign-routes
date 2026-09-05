@@ -95,6 +95,90 @@ describe('createCachedLoader', () => {
     });
   });
 
+  describe('an outage is bounded', () => {
+    it('serves the last good value through an outage, then nothing once it outlives maxStaleMs', async () => {
+      // Availability against withdrawal. Serving last-good forever means a
+      // campaign somebody unpublished to pull bad content stays live for as
+      // long as the CMS is down, silently. Past the bound the caller serves
+      // the page it was going to, which is this package's stated failure mode.
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let failing = false;
+      const load = jest.fn(async () => {
+        if (failing) throw new Error('down');
+        return 'good';
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, maxStaleMs: 10_000, load });
+      expect(await loader.read()).toBe('good');
+
+      failing = true;
+      now += 9_000;
+      expect(await loader.read()).toBe('good');
+      await settle();
+      now += 1_001;
+      expect(await loader.read()).toBeNull();
+      expect(loader.peek()).toBeNull();
+      await settle();
+
+      // Once a read succeeds again, the next request is personalized.
+      failing = false;
+      now += 30_000;
+      expect(await loader.read()).toBeNull();
+      await settle();
+      expect(await loader.read()).toBe('good');
+    });
+
+    it('bounds an outage to one hour by default', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let failing = false;
+      const load = jest.fn(async () => {
+        if (failing) throw new Error('down');
+        return 'good';
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, load });
+      expect(await loader.read()).toBe('good');
+      failing = true;
+      now += 3_599_000;
+      expect(await loader.read()).toBe('good');
+      now += 1_001;
+      expect(await loader.read()).toBeNull();
+    });
+
+    it('serves a bootstrap until the first real read lands, however long that takes', async () => {
+      // The bootstrap is the floor, not a value that can go stale: with the
+      // upstream down from the start there is nothing better to fall back to.
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const load = jest.fn(async () => {
+        throw new Error('down');
+      });
+      const loader = createCachedLoader({
+        ttlMs: 1_000,
+        timeoutMs: 100,
+        maxStaleMs: 10_000,
+        bootstrap: 'shipped',
+        load
+      });
+      expect(await loader.read()).toBe('shipped');
+      now += 100_000;
+      expect(await loader.read()).toBe('shipped');
+    });
+
+    it('tells onError about each failed refresh, and survives the callback throwing', async () => {
+      const onError = jest.fn(() => {
+        throw new Error('logger broke');
+      });
+      const load = jest.fn(async () => {
+        throw new Error('down');
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, load, onError });
+      expect(await loader.read()).toBeNull();
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect((onError.mock.calls[0] as unknown[])[0]).toEqual(new Error('down'));
+    });
+  });
+
   describe('stale-while-revalidate', () => {
     it('answers immediately with the stale value and refreshes behind it', async () => {
       // The whole point: after the first load, no request ever waits. Blocking

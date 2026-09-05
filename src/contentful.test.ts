@@ -195,6 +195,19 @@ describe('createContentfulRouteSource', () => {
     expect(again).toEqual(ROUTE_FIELDS);
   });
 
+  it('tells onError when a read fails, and never lets that callback throw into the request', async () => {
+    const fetchImpl = jest.fn(async () => {
+      throw new Error('network');
+    }) as unknown as typeof fetch;
+    const onError = jest.fn(() => {
+      throw new Error('my logger is broken');
+    });
+    const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl, onError });
+    expect(await source.getRoutes()).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0] as unknown[])[0]).toBeInstanceOf(Error);
+  });
+
   it('hands out a frozen array, since every caller gets the same one', async () => {
     // The callers are code we do not control. A customer's helper sorting this
     // in place would corrupt every later request on that isolate.

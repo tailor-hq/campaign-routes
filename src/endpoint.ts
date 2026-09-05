@@ -104,6 +104,18 @@ export interface EndpointRouteSourceConfig {
   /** How long a single fetch may take before it is abandoned. Default 2500ms. */
   timeoutMs?: number;
   /**
+   * How long the last good payload keeps serving while the endpoint is
+   * unreachable. Default one hour. Past it, every request is served its
+   * original page until a read succeeds, so a campaign somebody unpublished
+   * cannot outlive an outage by more than this.
+   */
+  maxStaleMs?: number;
+  /**
+   * Told about every failed read, so your own monitoring can know the rules
+   * are going stale. Never awaited, and a throw inside it is swallowed.
+   */
+  onError?: (error: unknown) => void;
+  /**
    * A payload to serve until the first real read lands.
    *
    * Ship it with the deploy and the first request of every new isolate is
@@ -370,6 +382,8 @@ export const createEndpointRouteSource = (
     const loader = createCachedLoader<CampaignRoutesPayload>({
       ttlMs,
       timeoutMs,
+      maxStaleMs: config.maxStaleMs,
+      onError: config.onError,
       // The shipped rules are for this deploy, whichever hostname it answers on.
       bootstrap: config.bootstrap,
       load: async (signal) => {
