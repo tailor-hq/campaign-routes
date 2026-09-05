@@ -72,58 +72,23 @@ describe('parameter matchers', () => {
   });
 });
 
-describe('a section wildcard in basePath', () => {
-  const section = rule({ utm_campaign: 'spring' }, { basePath: '/blog/*', targetPath: '/spring-offer' });
-
-  it('covers the section root and every page under it', () => {
-    expect(target([section], click({ utm_campaign: 'spring' }, '/blog'))).toBe('/spring-offer');
-    expect(target([section], click({ utm_campaign: 'spring' }, '/blog/'))).toBe('/spring-offer');
-    expect(target([section], click({ utm_campaign: 'spring' }, '/blog/post-1'))).toBe('/spring-offer');
-    expect(target([section], click({ utm_campaign: 'spring' }, '/blog/2026/post'))).toBe('/spring-offer');
+describe('a star in a path', () => {
+  it.each(['/blog/*', '/*', '/blog*', '/blog/**', '/bl*g'])('drops a rule whose basePath is %s: a rule is one page, never a section', (basePath) => {
+    // A rule replaces the whole page with one target, so a section wildcard
+    // would collapse every page it matched into one and a typo would take a
+    // section with it. Section-wide matching is for tools that change an
+    // element on each page; this is a rewrite.
+    expect(target([rule({ utm_term: 'x' }, { basePath, targetPath: '/offer' })], click({ utm_term: 'x' }, '/blog/post'))).toBeNull();
+    expect(target([rule({ utm_term: 'x' }, { basePath, targetPath: '/offer' })], click({ utm_term: 'x' }, '/blog'))).toBeNull();
   });
 
-  it('does not cover a sibling that merely shares the prefix', () => {
-    expect(target([section], click({ utm_campaign: 'spring' }, '/blogroll'))).toBeNull();
-    expect(target([section], click({ utm_campaign: 'spring' }, '/'))).toBeNull();
-  });
-
-  it('covers the whole site as /*', () => {
-    const everywhere = rule({ utm_campaign: 'spring' }, { basePath: '/*', targetPath: '/spring-offer' });
-    expect(target([everywhere], click({ utm_campaign: 'spring' }, '/'))).toBe('/spring-offer');
-    expect(target([everywhere], click({ utm_campaign: 'spring' }, '/anything/deep'))).toBe('/spring-offer');
-  });
-
-  it('never rewrites the target page to itself', () => {
-    // /blog/* covers /blog/spring-offer, and a rule serving that page must
-    // leave a request for it alone rather than loop.
-    const self = rule({ utm_campaign: 'spring' }, { basePath: '/blog/*', targetPath: '/blog/spring-offer' });
-    expect(target([self], click({ utm_campaign: 'spring' }, '/blog/spring-offer'))).toBeNull();
-    expect(target([self], click({ utm_campaign: 'spring' }, '/blog/other'))).toBe('/blog/spring-offer');
-  });
-
-  it('refuses a star in the target, which names pages to match and never a page to serve', () => {
+  it('refuses a star in the target, which could only ever be served literally', () => {
     expect(target([rule({ utm_campaign: 'x' }, { targetPath: '/offers/*' })], click({ utm_campaign: 'x' }))).toBeNull();
   });
 });
 
 describe('which rule wins', () => {
   const click2 = click({ utm_term: 'enterprise plan', utm_source: 'google' }, '/pricing');
-
-  it('prefers the exact page over a section wildcard', () => {
-    const routes = [
-      rule({ utm_term: '*' }, { basePath: '/*', targetPath: '/generic' }),
-      rule({ utm_term: '*' }, { basePath: '/pricing', targetPath: '/exact' })
-    ];
-    expect(target(routes, click2)).toBe('/exact');
-  });
-
-  it('prefers the longer section prefix among wildcards', () => {
-    const routes = [
-      rule({ utm_term: '*' }, { basePath: '/*', targetPath: '/site-wide' }),
-      rule({ utm_term: '*' }, { basePath: '/pricing/*', targetPath: '/pricing-section' })
-    ];
-    expect(target(routes, click({ utm_term: 'x' }, '/pricing/teams'))).toBe('/pricing-section');
-  });
 
   it('prefers an exact keyword over a catch-all of lone stars, however many the catch-all names', () => {
     // Nearly every ad click carries utm_source and utm_term, so two lone stars
@@ -144,30 +109,6 @@ describe('which rule wins', () => {
       rule({ utm_term: 'enterprise plan', utm_source: 'google' }, { targetPath: '/two' })
     ];
     expect(target(routes, click2)).toBe('/two');
-  });
-
-  it('ranks the page before the parameters, and the section prefix before them too', () => {
-    // An exact page with one parameter beats a section with three; a longer
-    // section prefix with one beats a shorter one with two.
-    const c = click({ utm_term: 'enterprise plan', utm_source: 'google', utm_medium: 'cpc' }, '/pricing/teams');
-    expect(
-      target(
-        [
-          rule({ utm_term: 'enterprise plan', utm_source: 'google', utm_medium: 'cpc' }, { basePath: '/pricing/*', targetPath: '/section' }),
-          rule({ utm_term: 'enterprise plan' }, { basePath: '/pricing/teams', targetPath: '/page' })
-        ],
-        c
-      )
-    ).toBe('/page');
-    expect(
-      target(
-        [
-          rule({ utm_term: 'enterprise plan', utm_source: 'google' }, { basePath: '/*', targetPath: '/site' }),
-          rule({ utm_term: 'enterprise plan' }, { basePath: '/pricing/*', targetPath: '/section' })
-        ],
-        c
-      )
-    ).toBe('/section');
   });
 
   it('breaks a tie between two patterns the same way every time', () => {
@@ -219,7 +160,4 @@ describe('wildcard corners', () => {
     expect(target([rule({ utm_term: inherited as never })], click({ utm_term: 'enterprise plan' }))).toBe('/pricing-enterprise');
   });
 
-  it.each(['/blog*', '/blog/**', '/bl*g/*', '/*blog'])('drops a rule whose basePath puts a star anywhere but the end: %s', (basePath) => {
-    expect(target([rule({ utm_term: 'x' }, { basePath, targetPath: '/offer' })], click({ utm_term: 'x' }, '/blog/post'))).toBeNull();
-  });
 });

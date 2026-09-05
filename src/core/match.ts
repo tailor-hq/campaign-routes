@@ -73,9 +73,11 @@ export type ParamMatcher =
 /** One rule, as Tailor writes it into the customer's CMS. */
 export interface CampaignRoute {
   /**
-   * The page the ad points at, e.g. `/product/analytics`. A trailing `/*`
-   * covers a section: `/blog/*` is `/blog` and every page under it, and `/*`
-   * is every page on the site.
+   * The page the ad points at, e.g. `/product/analytics`. Always one page:
+   * a rule replaces the whole page with `targetPath`, so a wildcard here would
+   * collapse every page it matched into one, and a typo would take a section
+   * with it. Section-wide matching belongs to tools that change an element on
+   * each page, not to a rewrite.
    */
   basePath: string;
   /**
@@ -216,17 +218,6 @@ export interface CampaignMatch {
  * two questions are "do these name the same page" and "what do I ask for", and
  * only the first one is allowed to be lenient.
  */
-/**
- * The two characters that make a `basePath` a section: built rather than
- * written, because the shipped JavaScript must carry no comment opener and
- * the tarball test reads a literal slash-star as one.
- */
-const SECTION_SUFFIX = '/' + '*';
-
-/** Whether a normalised `basePath` names a section rather than one page. */
-const isSectional = (basePath: string): boolean =>
-  basePath.length >= 2 && basePath.substring(basePath.length - 2) === SECTION_SUFFIX;
-
 const normalizePath = (value: string): string => {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim().toLowerCase();
@@ -296,19 +287,6 @@ const matchesParams = (
 };
 
 /**
- * Whether the request path is one this rule's `basePath` names: the page
- * itself, or with a trailing `/*`, the page and everything under it. Both
- * already normalised.
- */
-const matchesBasePath = (basePath: string, path: string): boolean => {
-  if (isSectional(basePath)) {
-    const prefix = basePath.substring(0, basePath.length - 2);
-    return path === prefix || path.indexOf(prefix + '/') === 0;
-  }
-  return basePath === path;
-};
-
-/**
  * Whether a value is a path on this site, and nothing else.
  *
  * **This is the security boundary of the whole package, and it has to live
@@ -369,15 +347,13 @@ const isUsable = (route: CampaignRoute): boolean => {
   const targetPath = normalizePath(route.targetPath);
   if (!isInternalPath(basePath)) return false;
   if (!isInternalPath(targetPath)) return false;
-  // A wildcard names pages to match, never a page to serve.
+  // A star belongs in a parameter value and nowhere else. In a target it would
+  // be served literally; in a base path it would be matched literally and
+  // silently never fire, and a rule that meant "this whole section" is one
+  // this package deliberately does not offer. Dropping the rule is the same
+  // outcome with a consistent reason.
   if (targetPath.indexOf('*') !== -1) return false;
-  // And the only wildcard a basePath takes is a trailing `/*`. A star anywhere
-  // else (`/blog*`, `/blog/**`) would be matched literally and silently never
-  // fire, which is the miss this package exists to avoid; dropping the rule is
-  // the same outcome with a consistent reason.
-  if (basePath.indexOf('*') !== -1 && !(isSectional(basePath) && basePath.indexOf('*') === basePath.length - 1)) {
-    return false;
-  }
+  if (basePath.indexOf('*') !== -1) return false;
 
   // Every matcher must be one the core acts on; a shape it does not know is a
   // content mistake, not something to guess at.
@@ -392,9 +368,8 @@ const isUsable = (route: CampaignRoute): boolean => {
 
 /**
  * How narrowly a rule describes traffic, as numbers to compare in order:
- * an exact page beats a section wildcard; among wildcards the longer prefix
- * wins; then more exact (plain, non-pattern) values; then more parameters
- * that narrow at all; then more parameters of any kind.
+ * more exact (plain, non-pattern) values; then more parameters that narrow at
+ * all; then more parameters of any kind.
  *
  * Exact values come before parameter count on purpose. A lone `*` means
  * "present, whatever the value", and nearly every ad click carries
@@ -403,8 +378,6 @@ const isUsable = (route: CampaignRoute): boolean => {
  * a rule naming the exact keyword, which is the broader rule winning.
  */
 const specificity = (route: CampaignRoute): number[] => {
-  const basePath = normalizePath(route.basePath);
-  const sectional = isSectional(basePath);
   const keys = Object.keys(route.matchParams);
   let exact = 0;
   let narrowing = 0;
@@ -413,17 +386,17 @@ const specificity = (route: CampaignRoute): number[] => {
     if (typeof matcher === 'string' && matcher.indexOf('*') === -1) exact += 1;
     if (matcher !== '*') narrowing += 1;
   }
-  return [sectional ? 0 : 1, sectional ? basePath.length : 0, exact, narrowing, keys.length];
+  return [exact, narrowing, keys.length];
 };
 
 /**
  * Which of two matching rules wins.
  *
- * **The narrower description wins**: a rule for `/pricing` over one for `/*`,
- * an exact keyword over a pattern, and a rule naming `utm_term` AND
- * `utm_source` over one naming `utm_term` alone; the narrower description is
- * the one the marketer meant for that visitor. See `specificity` for the
- * order, and for why an exact value outranks a parameter count.
+ * **The narrower description wins**: an exact keyword over a pattern, and a
+ * rule naming `utm_term` AND `utm_source` over one naming `utm_term` alone;
+ * the narrower description is the one the marketer meant for that visitor.
+ * See `specificity` for the order, and for why an exact value outranks a
+ * parameter count.
  *
  * On a genuine tie, the target path — chosen for being total and stable rather
  * than for meaning anything. Two equally specific rules is a mistake in the
@@ -474,10 +447,7 @@ export const matchCampaignRoute = (
   for (let index = 0; index < routes.length; index += 1) {
     const route = routes[index];
     if (!isUsable(route)) continue;
-    if (!matchesBasePath(normalizePath(route.basePath), path)) continue;
-    // Under a section wildcard the target can be one of the pages it covers;
-    // a request for that page must not be rewritten to itself.
-    if (normalizePath(route.targetPath) === path) continue;
+    if (normalizePath(route.basePath) !== path) continue;
     if (!matchesParams(route.matchParams, searchParams)) continue;
     // Checked per candidate rather than once at the end, so a rule whose page is
     // not published yet loses to a less specific rule whose page is — instead of

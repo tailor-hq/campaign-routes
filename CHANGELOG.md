@@ -16,7 +16,7 @@ First release. Not yet published.
 
 - `matchCampaignRoute(rules, request)` — the matching core. Pure, no
   dependencies, no network, ES 5.1 built-ins only so it runs inside a CloudFront
-  Function. About 8 kB built, against that runtime's 10 kB budget, and
+  Function. About 7 kB built, against that runtime's 10 kB budget, and
   `package-shape.test.ts` fails the build the day it is over.
 - `@tailor-ai/campaign-routes/endpoint` — read the rules from a route handler in
   your own app. Returns the rules and the paths that exist in one payload, so
@@ -31,10 +31,10 @@ First release. Not yet published.
   deploy has proved it.
 - Matchers beyond exact: a `*` wildcard in a parameter value (`"enterprise*"`,
   `"*langsmith*"`, a lone `"*"` for "present"), and operator objects
-  `{ contains }`, `{ startsWith }`, `{ endsWith }` and `{ oneOf: [...] }`; a
-  trailing `/*` on `basePath` covers a section (`/blog/*`) or the site (`/*`).
-  None of it is a regular expression, by design. The narrower rule wins: exact
-  page over section, longer section over shorter, more exact values (so a
+  `{ contains }`, `{ startsWith }`, `{ endsWith }` and `{ oneOf: [...] }`.
+  Paths take no wildcard: a rule is one page served instead of one other page,
+  and a star in either path drops the rule. None of it is a regular
+  expression, by design. The narrower rule wins: more exact values (so a
   keyword beats a catch-all of lone stars), then more narrowing parameters,
   then more parameters of any kind.
 - The route handler's payload carries `version`, the package version it was

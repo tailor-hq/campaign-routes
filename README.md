@@ -210,11 +210,13 @@ string:
 | `{ "endsWith": " pricing" }` | ends with it |
 | `{ "oneOf": ["enterprise plan", "enterprise*"] }` | matches any one entry, each a plain or wildcard string |
 
-`basePath` takes one form of wildcard: a trailing `/*` covers a section, so
-`/blog/*` is `/blog` and every page under it, and `/*` is the whole site. A
-star anywhere else in `basePath` makes the rule unusable (it is dropped, not
-matched literally), and a `targetPath` is always one page and may not contain
-`*`.
+Paths take no wildcard at all: a rule is one page served instead of one
+other page. A `basePath` or `targetPath` containing `*` makes the rule
+unusable (it is dropped, not matched literally). This is deliberate. A rule
+replaces the whole page, so `/blog/*` would send every visitor who clicked
+through to a specific post to the same campaign page, and one typo would take
+a section with it. Matching a section is for tools that change an element on
+each page, not for a rewrite.
 
 None of this is a regular expression, and none of it will be. These strings are
 typed by marketers and run on every ad click, and a pattern that can be made to
@@ -227,11 +229,10 @@ on — Google appends `gclid`, Meta appends `fbclid`, your analytics adds its ow
 so a rule demanding an exact parameter set would match in testing and never once
 in production. Values compare case-insensitively; keys do not.
 
-When two rules match, the narrower one wins: an exact `basePath` beats a
-section wildcard, a longer section prefix beats a shorter one, more exact
-values beat fewer (so a rule naming the actual keyword beats a catch-all of
-lone `*`s, however many parameters the catch-all names), then more narrowing
-parameters, then more parameters of any kind. On a genuine tie the
+When two rules match, the narrower one wins: more exact values beat fewer (so
+a rule naming the actual keyword beats a catch-all of lone `*`s, however many
+parameters the catch-all names), then more narrowing parameters, then more
+parameters of any kind. On a genuine tie the
 target path decides, which is arbitrary and deliberately deterministic: two
 equally specific rules is a mistake in your content, and the failure it must not
 produce is a page that alternates between versions depending on which entry came
