@@ -49,6 +49,7 @@ describe('campaignRouteFor', () => {
     // is the Host header. This is the whole chain end to end: a forged Host
     // naming a cloud metadata address must produce no fetch and no rewrite.
     const { createEndpointRouteSource } = await import('./endpoint.js');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const fetchImpl = jest.fn(async () => ({
       ok: true,
       status: 200,
@@ -62,6 +63,7 @@ describe('campaignRouteFor', () => {
     );
     expect(target).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('does not touch the rule source for a request with no query string', async () => {

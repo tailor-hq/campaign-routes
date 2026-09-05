@@ -1,7 +1,9 @@
 import {
   campaignRoutesPayload,
   createEndpointRouteSource,
-  isRefusedRequestOrigin
+  isLoopbackOrigin,
+  isRefusedRequestOrigin,
+  requestOriginPolicy
 } from './endpoint.js';
 
 const ROUTE = {
@@ -258,6 +260,15 @@ describe('createEndpointRouteSource', () => {
   });
 
   describe('a request origin only a server could reach', () => {
+    // Every refusal below warns once; the warning is asserted on elsewhere.
+    let warn: jest.SpyInstance;
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
     // A forged Host header can name anything, and the fetch this source makes
     // from it runs inside the customer's network. The path is fixed and the
     // body never goes back to the requester, so the primitive is blind — but a
@@ -322,10 +333,104 @@ describe('createEndpointRouteSource', () => {
     expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
     expect(await source.getRoutes('https://preview.example.com')).toEqual([ROUTE]);
     // Public, well-formed, and not on the list: refused just the same.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await source.getRoutes('https://www.example.com.evil.example')).toEqual([]);
+    warn.mockRestore();
     expect((fetchImpl as unknown as jest.Mock).mock.calls.map((call) => call[0])).toEqual([
       'https://www.example.com/api/campaign-routes',
       'https://preview.example.com/api/campaign-routes'
     ]);
+  });
+
+  describe('how far a request origin is trusted depends on where the code runs', () => {
+    const keys = ['VERCEL', 'NETLIFY', 'NODE_ENV'] as const;
+    const saved: Record<string, string | undefined> = {};
+    beforeEach(() => {
+      for (const key of keys) {
+        saved[key] = process.env[key];
+        delete process.env[key];
+      }
+    });
+    afterEach(() => {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    });
+
+    it('is decided from the environment, and says so', () => {
+      expect(requestOriginPolicy({ VERCEL: '1', NODE_ENV: 'production' })).toBe('platform');
+      expect(requestOriginPolicy({ NETLIFY: 'true', NODE_ENV: 'production' })).toBe('platform');
+      expect(requestOriginPolicy({ NODE_ENV: 'development' })).toBe('development');
+      expect(requestOriginPolicy({})).toBe('development');
+      expect(requestOriginPolicy({ NODE_ENV: 'production' })).toBe('refuse');
+    });
+
+    it('in production off a hostname-routing platform, reads nothing until configured — and says so once', async () => {
+      // The fail-closed default a public package owes its users. A self-hosted
+      // Next.js has nothing vouching for the Host header, so a request-derived
+      // origin is refused outright. Silently switching every campaign off is
+      // the failure this package exists to avoid, so it warns — once, since a
+      // warning per request is a log nobody reads.
+      process.env.NODE_ENV = 'production';
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ fetchImpl });
+
+      expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+      expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('trustedOrigins');
+      warn.mockRestore();
+    });
+
+    it('in production on Vercel, the platform vouches for Host: public origins read, loopback does not', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.VERCEL = '1';
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ fetchImpl });
+
+      expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+      expect(await source.getRoutes('http://localhost:3000')).toEqual([]);
+      expect(isLoopbackOrigin('http://localhost:3000')).toBe(true);
+      expect(isLoopbackOrigin('http://[::1]:3000')).toBe(true);
+      expect(isLoopbackOrigin('https://www.example.com')).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('trustedOrigins still wins over every policy', async () => {
+      process.env.NODE_ENV = 'production';
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ trustedOrigins: ['https://www.example.com'], fetchImpl });
+      expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+    });
+  });
+
+  it('bounds the reads in flight, so a burst of new origins cannot fan out into a burst of requests', async () => {
+    // The cache size bounds what is remembered, not what is fetched: each new
+    // origin starts a read before anything is evicted. Twelve origins arriving
+    // at once must not become twelve concurrent server-side requests.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = jest.fn(async () => {
+      await gate;
+      return { ok: true, status: 200, json: async () => ({ routes: [ROUTE], paths: [] }) };
+    }) as unknown as typeof fetch;
+    const source = createEndpointRouteSource({ fetchImpl });
+
+    const reads = Array.from({ length: 12 }, (_, index) =>
+      source.getRoutes(`https://host-${index}.example`)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+
+    release();
+    const results = await Promise.all(reads);
+    expect(results.filter((routes) => routes.length === 1)).toHaveLength(4);
+    expect(results.filter((routes) => routes.length === 0)).toHaveLength(8);
   });
 });

@@ -24,6 +24,77 @@ describe('createCachedLoader', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  describe('a failing upstream is left alone for a while', () => {
+    it('does not retry on every read while the upstream is failing fast', async () => {
+      // Contentful answering 429 in five milliseconds means the in-flight
+      // collapse protects almost nothing: without a wait, every page request
+      // becomes an upstream request against a service already refusing. One
+      // failure starts a wait, and reads inside it answer with what is in
+      // hand — here nothing — without touching the upstream.
+      const load = jest.fn(async () => {
+        throw new Error('429');
+      });
+      const loader = createCachedLoader({ ttlMs: 60_000, timeoutMs: 100, load });
+      for (let i = 0; i < 20; i += 1) {
+        expect(await loader.read()).toBeNull();
+      }
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries once the wait is over, and the wait doubles per failure in a row', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const load = jest.fn(async () => {
+        throw new Error('500');
+      });
+      const loader = createCachedLoader({ ttlMs: 60_000, timeoutMs: 100, load });
+
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(1);
+      now += 999;
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(1);
+      now += 1;
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(2);
+      now += 1_999;
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(2);
+      now += 1;
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps serving the last good value throughout, and a success ends the wait', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let failing = false;
+      const load = jest.fn(async () => {
+        if (failing) throw new Error('500');
+        return 'good';
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, load });
+      expect(await loader.read()).toBe('good');
+
+      failing = true;
+      now += 1_001;
+      expect(await loader.read()).toBe('good');
+      await settle();
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(await loader.read()).toBe('good');
+      expect(load).toHaveBeenCalledTimes(2);
+
+      failing = false;
+      now += 1_000;
+      expect(await loader.read()).toBe('good');
+      await settle();
+      expect(load).toHaveBeenCalledTimes(3);
+      now += 999;
+      expect(await loader.read()).toBe('good');
+      expect(load).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe('stale-while-revalidate', () => {
     it('answers immediately with the stale value and refreshes behind it', async () => {
       // The whole point: after the first load, no request ever waits. Blocking
@@ -170,7 +241,10 @@ describe('createCachedLoader', () => {
     await expect(loader.read()).resolves.toBeNull();
   });
 
-  it('retries after a failure rather than caching it', async () => {
+  it('retries after a failure rather than caching it for a TTL', async () => {
+    // A failure is remembered for a short, growing wait — never for the TTL.
+    let now = 1_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
     let attempt = 0;
     const load = jest.fn(async () => {
       attempt += 1;
@@ -179,6 +253,7 @@ describe('createCachedLoader', () => {
     });
     const loader = createCachedLoader({ ttlMs: 60_000, timeoutMs: 100, load });
     expect(await loader.read()).toBeNull();
+    now += 1_000;
     expect(await loader.read()).toBe('good');
   });
 

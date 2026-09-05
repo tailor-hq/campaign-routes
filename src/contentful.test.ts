@@ -399,8 +399,13 @@ describe('createContentfulRouteSource', () => {
       return { ok: true, status: 200, json: async () => ({ items: [entry(ROUTE_FIELDS)] }) };
     }) as unknown as typeof fetch;
 
+    // A failure is remembered for a short, growing wait — never for the TTL.
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
     const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl });
     expect(await source.getRoutes()).toEqual([]);
+    now += 1_000;
     expect(await source.getRoutes()).toEqual([ROUTE_FIELDS]);
+    clock.mockRestore();
   });
 });

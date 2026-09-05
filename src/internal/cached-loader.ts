@@ -64,6 +64,21 @@ export interface CachedLoader<T> {
   peek: () => T | null;
 }
 
+/**
+ * How long to leave a failing upstream alone, doubling per consecutive failure.
+ *
+ * A failed read deliberately leaves `cachedAt` alone so the next visitor
+ * retries rather than waiting out a whole TTL on a blip — and on its own that
+ * rule turns a fast failure into a storm. Contentful answering 429 in five
+ * milliseconds means the in-flight collapse protects almost nothing, and every
+ * page request becomes an upstream request against a service that is already
+ * refusing, for as long as the outage lasts. So a failure also starts a wait
+ * that grows with each one in a row, during which reads are answered from
+ * whatever is cached (or with nothing) and the upstream is not touched.
+ */
+const FAILURE_BACKOFF_BASE_MS = 1_000;
+const FAILURE_BACKOFF_MAX_MS = 30_000;
+
 export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoader<T> => {
   // A bootstrap starts life already expired (`cachedAt` 0), so the first read
   // returns it AND kicks off a real one behind it. Shipped rules are a floor,
@@ -71,6 +86,13 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   let cached: T | null = config.bootstrap ?? null;
   let cachedAt = 0;
   let inFlight: Promise<T | null> | null = null;
+  let consecutiveFailures = 0;
+  let lastFailureAt = 0;
+
+  const backoffMs = (): number =>
+    Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10));
+  const backingOff = (): boolean =>
+    consecutiveFailures > 0 && Date.now() - lastFailureAt < backoffMs();
 
   const run = async (): Promise<T | null> => {
     const controller = new AbortController();
@@ -79,6 +101,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       const value = await config.load(controller.signal);
       cached = value;
       cachedAt = Date.now();
+      consecutiveFailures = 0;
       return value;
     } finally {
       // In `finally` so a timer never outlives the read that armed it. On a fast
@@ -92,8 +115,12 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
     if (inFlight) return inFlight;
     inFlight = run()
       // A failed read does NOT update `cachedAt`, so the next caller retries
-      // rather than waiting out a TTL on an error.
-      .catch(() => cached)
+      // rather than waiting out a TTL on an error — after the backoff above.
+      .catch(() => {
+        consecutiveFailures += 1;
+        lastFailureAt = Date.now();
+        return cached;
+      })
       .finally(() => {
         inFlight = null;
       });
@@ -105,6 +132,10 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
     read: async () => {
       const fresh = cached !== null && Date.now() - cachedAt < config.ttlMs;
       if (fresh) return cached;
+
+      // Inside a failure backoff the upstream is left alone: whatever is in
+      // hand is the answer, and nothing being in hand is the answer too.
+      if (backingOff()) return cached;
 
       // **Stale-while-revalidate.** With a value in hand, serve it and refresh
       // behind the request rather than making somebody wait. Blocking here is

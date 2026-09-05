@@ -216,6 +216,63 @@ export const isRefusedRequestOrigin = (origin: string): boolean => {
   return false;
 };
 
+/** Whether an origin names this machine — `next dev`'s address, and nobody else's business in production. */
+export const isLoopbackOrigin = (origin: string): boolean => {
+  let host: string;
+  try {
+    host = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '::1' ||
+    host === '::ffff:7f00:1' ||
+    host.startsWith('127.')
+  );
+};
+
+/**
+ * How far a request's own origin is trusted, decided by where the code runs.
+ *
+ * - **`platform`** — a host that routes by hostname (Vercel, Netlify) never
+ *   hands the app a request whose Host it did not itself resolve, so the origin
+ *   is the platform's word rather than the client's. Any public origin is read;
+ *   loopback is not, since production has no business reaching it.
+ * - **`development`** — anything not built for production: public origins and
+ *   loopback both, so `next dev` and a preview against a local endpoint work
+ *   with no configuration.
+ * - **`refuse`** — production, off any such platform. A self-hosted Next.js or
+ *   anything behind a proxy that forwards Host has no vouching to lean on, so
+ *   a request-derived origin reads nothing until `trustedOrigins` or `origin`
+ *   says which hostnames are real. That is the fail-closed default a public
+ *   package owes its users, and it is loud rather than silent: see the warning
+ *   in `createEndpointRouteSource`.
+ *
+ * Exported so the decision is testable without a deploy.
+ */
+export type RequestOriginPolicy = 'platform' | 'development' | 'refuse';
+
+export const requestOriginPolicy = (
+  env: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {}
+): RequestOriginPolicy => {
+  if (env.VERCEL || env.NETLIFY) return 'platform';
+  if (env.NODE_ENV !== 'production') return 'development';
+  return 'refuse';
+};
+
+/**
+ * How many rule reads this source will have in flight at once, across every
+ * origin. The cache size bounds what is remembered, not what is fetched: each
+ * new origin starts a read before anything is evicted, so a burst of forged
+ * Hosts would otherwise fan out into as many concurrent server-side requests.
+ * Past this, a read for a new origin answers with nothing rather than joining
+ * the pile.
+ */
+const MAX_CONCURRENT_LOADS = 4;
+
 const isPayload = (value: unknown): value is CampaignRoutesPayload =>
   !!value && typeof value === 'object' && Array.isArray((value as CampaignRoutesPayload).routes);
 
@@ -268,6 +325,25 @@ export const createEndpointRouteSource = (
   const loaders = new Map<string, CachedLoader<CampaignRoutesPayload>>();
   // The origin most recently read, for a `pageExists` caller that names none.
   let lastOrigin = pinnedOrigin ?? '';
+  let activeLoads = 0;
+  const policy = requestOriginPolicy();
+  let warnedRefusal = false;
+
+  /**
+   * Refuse, and say so once. This package is otherwise silent on purpose, but
+   * a refusal here switches every campaign off for that hostname with nothing
+   * else anywhere reporting it, and the fix is one line of configuration —
+   * exactly the silent miss the rest of the package spends its care avoiding.
+   */
+  const refuse = (origin: string): null => {
+    if (!warnedRefusal && typeof console !== 'undefined') {
+      warnedRefusal = true;
+      console.warn(
+        `campaign-routes: refused to read rules from ${origin}. Pass trustedOrigins (the hostnames this site answers on) or origin to createEndpointRouteSource.`
+      );
+    }
+    return null;
+  };
 
   const loaderFor = (origin: string): CachedLoader<CampaignRoutesPayload> => {
     const existing = loaders.get(origin);
@@ -282,19 +358,27 @@ export const createEndpointRouteSource = (
       // The shipped rules are for this deploy, whichever hostname it answers on.
       bootstrap: config.bootstrap,
       load: async (signal) => {
-        const response = await doFetch(origin + path, { signal });
-        if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
-        const body: unknown = await response.json();
-        if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
-        // Frozen for the same reason the Contentful source freezes: every
-        // request on this isolate gets these arrays by reference, and the
-        // callers are code we do not control. A customer's helper sorting
-        // `routes` in place would corrupt every subsequent request for as long
-        // as the cache lives.
-        const payload = campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
-        Object.freeze(payload.routes);
-        Object.freeze(payload.paths);
-        return Object.freeze(payload);
+        if (activeLoads >= MAX_CONCURRENT_LOADS) {
+          throw new Error('campaign routes: too many rule reads in flight');
+        }
+        activeLoads += 1;
+        try {
+          const response = await doFetch(origin + path, { signal });
+          if (!response.ok) throw new Error('campaign routes endpoint answered ' + String(response.status));
+          const body: unknown = await response.json();
+          if (!isPayload(body)) throw new Error('campaign routes endpoint returned an unexpected shape');
+          // Frozen for the same reason the Contentful source freezes: every
+          // request on this isolate gets these arrays by reference, and the
+          // callers are code we do not control. A customer's helper sorting
+          // `routes` in place would corrupt every subsequent request for as
+          // long as the cache lives.
+          const payload = campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
+          Object.freeze(payload.routes);
+          Object.freeze(payload.paths);
+          return Object.freeze(payload);
+        } finally {
+          activeLoads -= 1;
+        }
       }
     });
     loaders.set(origin, loader);
@@ -307,15 +391,21 @@ export const createEndpointRouteSource = (
 
   /**
    * Which origin to read for, or null for a request origin this source will
-   * not fetch from. A pinned origin wins outright and is never checked; a
-   * request-derived one is checked against the allowlist when there is one,
-   * and against the refused destinations otherwise.
+   * not fetch from. A pinned origin wins outright and is never checked. A
+   * request-derived one is checked against the allowlist when there is one;
+   * otherwise the policy decides, and the destinations only a server could
+   * reach are refused under every policy.
    */
   const resolveOrigin = (origin?: string): string | null => {
     if (pinnedOrigin) return pinnedOrigin;
     if (typeof origin === 'string' && origin.length > 0) {
-      if (trustedOrigins) return trustedOrigins.has(canonicalOrigin(origin) ?? '') ? origin : null;
-      return isRefusedRequestOrigin(origin) ? null : origin;
+      if (trustedOrigins) {
+        return trustedOrigins.has(canonicalOrigin(origin) ?? '') ? origin : refuse(origin);
+      }
+      if (policy === 'refuse') return refuse(origin);
+      if (isRefusedRequestOrigin(origin)) return refuse(origin);
+      if (policy === 'platform' && isLoopbackOrigin(origin)) return refuse(origin);
+      return origin;
     }
     return lastOrigin.length > 0 ? lastOrigin : null;
   };

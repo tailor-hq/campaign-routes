@@ -45,18 +45,31 @@ share rules or page lists either. And `isInternalPath` confines every target to
 your own site's paths regardless.
 
 What a forged `Host` could still do is make the middleware issue one `GET`, to
-a fixed path, from inside your network, without seeing the response. So the
-default **refuses the destinations only a server could reach**: private ranges,
-link-local (which is where every cloud metadata service lives), carrier-grade
-NAT, `0.0.0.0`, anything carrying credentials, and anything not `http(s)`. A
-request naming one of those reads no rules at all. **Loopback is deliberately
-allowed**, because `next dev` runs there and refusing it would break every
-developer's first run; a self-hosted production deployment should close it
-with one of the two settings below.
+a fixed path, from inside your network, without seeing the response. So how
+far the request's origin is trusted depends on where the code runs, and the
+default fails closed:
+
+- **On a platform that routes by hostname** (Vercel, Netlify), the platform
+  never hands your app a request whose Host it did not itself resolve, so the
+  origin is the platform's word rather than the client's. Public origins are
+  read with no configuration; loopback is not.
+- **In development** (any build not for production), public origins and
+  loopback both, so `next dev` works with no configuration.
+- **In production anywhere else** — self-hosted, or behind a proxy that
+  forwards Host — a request-derived origin reads **nothing** until you say
+  which hostnames are real, and the source says so with a single
+  `console.warn` rather than silently switching every campaign off.
+
+Under every policy the destinations only a server could reach are refused
+outright: private ranges, link-local (where every cloud metadata service
+lives), carrier-grade NAT, `0.0.0.0`, anything carrying credentials, anything
+not `http(s)`. And reads in flight are capped across all origins, so a burst
+of forged Hosts cannot fan out into a burst of server-side requests.
 
 **Pass `trustedOrigins`** to read only from hostnames you name, or **pass
 `origin`** to ignore the request entirely; once set, neither is ever overridden
-by a request.
+by a request, and either is the right answer on a self-hosted production
+deployment.
 
 **The rules endpoint is public by design.** Middleware reads it without
 credentials, so anyone can too. It carries every campaign rule — which
