@@ -2,6 +2,14 @@
 
 Serve the campaign page a visitor should get, from rules held in your own CMS.
 
+**TL;DR**
+
+- **What:** a visitor who arrives from an ad (`/pricing?utm_campaign=enterprise`) is served your campaign page (`/pricing-enterprise`) at the original URL. Everyone else gets `/pricing`.
+- **How:** a rule in your CMS says which page, for which parameters. Your app exposes the rules at one route. Next.js middleware reads them once a minute and rewrites matching requests.
+- **Install:** two files, `middleware.ts` and `app/api/campaign-routes/route.ts`. After that, every campaign is a publish in the CMS, not a deploy.
+- **Never:** never calls Tailor, never fails a page load, never redirects, never rewrites off your site, never sets a cookie.
+- **Status:** pre-1.0, MIT, four entry points (`.`, `/next`, `/endpoint`, `/contentful`).
+
 An ad points at `/pricing`. A test proved different copy converts better for
 `utm_campaign=enterprise`, so that copy lives on `/pricing-enterprise`. This
 serves that page at the original URL, on the server, for the visitors the ad
