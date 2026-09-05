@@ -6,7 +6,7 @@ publishes in **Contentful**, on a **Next.js** site.
 - **What:** a visitor who arrives from an ad (`/pricing?utm_campaign=enterprise`) is served your campaign page (`/pricing-enterprise`) at the original URL. Everyone else gets `/pricing`.
 - **How:** a Campaign Route entry in Contentful says which page, for which ad parameters. Your app exposes those rules at one route; its middleware reads them once a minute and rewrites matching requests.
 - **Install:** two files in your Next.js app. After that, every campaign is a publish in Contentful, not a deploy.
-- **Never:** never calls Tailor, never fails a page load, never redirects, never rewrites off your site, never sets a cookie.
+- **Never:** calls Tailor, fails a page load at request time, redirects, rewrites off your site, or sets a cookie.
 - **Works with:** Contentful and Next.js today. Other CMSs are one small adapter away; the matching itself runs anywhere JavaScript does.
 - **Status:** pre-1.0, MIT.
 
@@ -15,8 +15,8 @@ publishes in **Contentful**, on a **Next.js** site.
 /pricing?utm_campaign=enterprise    → the campaign page, at the same URL
 ```
 
-No redirect, no flash, no client-side swap. A crawler that runs no JavaScript
-sees what a person sees.
+The address bar does not change, nothing flashes, and nothing swaps in on the
+client. A crawler that runs no JavaScript sees what a person sees.
 
 ## How it works
 
@@ -30,9 +30,8 @@ sees what a person sees.
 3. **Middleware decides per request.** For a request carrying a query string,
    it matches against the rules and rewrites to the campaign page on a hit. It
    reads the rules from `/api/campaign-routes`, keeps them in memory for 60
-   seconds, and refreshes behind a response, so after the first load no
-   visitor waits on the read (ship a `bootstrap` and not even the first one
-   does).
+   seconds, and refreshes behind a response. After the first load no visitor
+   waits for the rules, and with a `bootstrap` the first one does not either.
 
 ```
 marketer publishes     your route handler         middleware, per isolate      per request
@@ -163,7 +162,7 @@ conversion. It is never awaited and cannot throw into the request.
   Check configuration on a preview deploy before promoting.
 - **Never sends a visitor off your site.** A target that is not a rooted path
   on your own site is refused.
-- **Never redirects, never sets a cookie, never phones home.** The only
+- **Never redirects, sets a cookie, or phones home.** The only
   network calls are to your own endpoint and your own CMS.
 - **Keeps serving through an outage, for an hour.** Then falls back to the
   original page until a read succeeds.
@@ -180,8 +179,8 @@ Full detail, including the security model: [SECURITY.md](./SECURITY.md).
 
 ## Not on Next.js, or not on Contentful?
 
-The decision is one pure function with no dependencies, no network and no
-framework:
+The decision is one pure function that needs no dependency, no network call
+and no framework:
 
 ```ts
 import { matchCampaignRoute } from '@tailor-ai/campaign-routes';

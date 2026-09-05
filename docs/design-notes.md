@@ -94,8 +94,11 @@ runs:
   not itself resolve, so public origins are read with no configuration.
   (Netlify is treated the same way and has not been driven here yet.) A
   preview behind Vercel's Deployment Protection answers the middleware's own
-  fetch with a 401, so campaigns are off there until `/api/campaign-routes`
-  is allowed through.
+  fetch with a redirect to Vercel's login page, which the package refuses to
+  follow because it never leaves the origin it was told to read, so campaigns
+  are off there until `/api/campaign-routes` is allowed through. Seen on a
+  protected preview: `onError` receives "campaign routes endpoint redirected
+  off its own origin" and every visitor gets their original page.
 - **In development** (`NODE_ENV` of `development` or `test`) loopback is
   allowed too, so `next dev` works with no configuration.
 - **Everywhere else**, including an unset `NODE_ENV`, a request-derived origin
