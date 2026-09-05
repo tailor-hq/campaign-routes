@@ -30,7 +30,9 @@ sees what a person sees.
 3. **Middleware decides per request.** For a request carrying a query string,
    it matches against the rules and rewrites to the campaign page on a hit. It
    reads the rules from `/api/campaign-routes`, keeps them in memory for 60
-   seconds, and refreshes behind a response, so no visitor waits on the read.
+   seconds, and refreshes behind a response, so after the first load no
+   visitor waits on the read (ship a `bootstrap` and not even the first one
+   does).
 
 ```
 marketer publishes     your route handler         middleware, per isolate      per request
@@ -137,7 +139,7 @@ None of these is a regular expression, on purpose.
 | Option | Default | What it does |
 | --- | --- | --- |
 | `origin` | the request's own origin | Pin where the rules are read from. Use it when self-hosting. |
-| `trustedOrigins` | none | The hostnames this deployment answers on; requests for any other read nothing. |
+| `trustedOrigins` | none | The full origins this deployment answers on, e.g. `['https://www.example.com', 'https://example.com']`; a request for any other reads nothing. |
 | `ttlMs` | 60 s | How long rules are reused before a refresh. |
 | `maxStaleMs` | 1 h | How long the last good rules keep serving while the endpoint is down; after that, visitors get their original page. |
 | `bootstrap` | none | Rules to serve before the first read, so a cold server's first visitor is personalized too. |
