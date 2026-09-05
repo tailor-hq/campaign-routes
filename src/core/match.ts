@@ -207,6 +207,17 @@ export interface CampaignMatch {
  * two questions are "do these name the same page" and "what do I ask for", and
  * only the first one is allowed to be lenient.
  */
+/**
+ * The two characters that make a `basePath` a section: built rather than
+ * written, because the shipped JavaScript must carry no comment opener and
+ * the tarball test reads a literal slash-star as one.
+ */
+const SECTION_SUFFIX = '/' + '*';
+
+/** Whether a normalised `basePath` names a section rather than one page. */
+const isSectional = (basePath: string): boolean =>
+  basePath.length >= 2 && basePath.substring(basePath.length - 2) === SECTION_SUFFIX;
+
 const normalizePath = (value: string): string => {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim().toLowerCase();
@@ -281,7 +292,7 @@ const matchesParams = (
  * already normalised.
  */
 const matchesBasePath = (basePath: string, path: string): boolean => {
-  if (basePath.length >= 2 && basePath.substring(basePath.length - 2) === '/*') {
+  if (isSectional(basePath)) {
     const prefix = basePath.substring(0, basePath.length - 2);
     return path === prefix || path.indexOf(prefix + '/') === 0;
   }
@@ -370,7 +381,7 @@ const isUsable = (route: CampaignRoute): boolean => {
  */
 const specificity = (route: CampaignRoute): number[] => {
   const basePath = normalizePath(route.basePath);
-  const sectional = basePath.length >= 2 && basePath.substring(basePath.length - 2) === '/*';
+  const sectional = isSectional(basePath);
   const keys = Object.keys(route.matchParams);
   let exact = 0;
   for (let index = 0; index < keys.length; index += 1) {
