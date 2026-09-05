@@ -260,6 +260,22 @@ describe('createCachedLoader', () => {
   });
 
   describe('a read the loader declined', () => {
+    it('does not hand back a value the outage bound has retired', async () => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const { deferredRead } = await import('./cached-loader.js');
+      let decline = false;
+      const load = jest.fn(async () => {
+        if (decline) throw deferredRead();
+        return 'v';
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, maxStaleMs: 10_000, load, awaitStaleRefresh: true });
+      expect(await loader.read()).toBe('v');
+      decline = true;
+      now += 10_001;
+      expect(await loader.read()).toBeNull();
+    });
+
     it('is not a failure: no backoff, no onError, and the next read tries again', async () => {
       const { deferredRead } = await import('./cached-loader.js');
       let decline = true;

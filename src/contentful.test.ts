@@ -90,7 +90,7 @@ describe('createContentfulRouteSource', () => {
   it('asks the Delivery API for published tailorCampaignRoute entries', async () => {
     const fetchImpl = respondWith([entry(ROUTE_FIELDS)]);
     const source = createContentfulRouteSource({
-      spaceId: 'zl46wx7qt94g',
+      spaceId: 'spc1x2y3z4w5',
       deliveryToken: 'cda-token',
       fetchImpl
     });
@@ -98,7 +98,7 @@ describe('createContentfulRouteSource', () => {
     await source.getRoutes();
 
     const [url, init] = (fetchImpl as unknown as jest.Mock).mock.calls[0];
-    expect(url).toContain('https://cdn.contentful.com/spaces/zl46wx7qt94g/environments/master/entries');
+    expect(url).toContain('https://cdn.contentful.com/spaces/spc1x2y3z4w5/environments/master/entries');
     expect(url).toContain('content_type=tailorCampaignRoute');
     expect(init.headers.Authorization).toBe('Bearer cda-token');
   });
@@ -161,6 +161,25 @@ describe('createContentfulRouteSource', () => {
     expect(await source.getRoutes()).toHaveLength(1500);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect((fetchImpl as unknown as jest.Mock).mock.calls[1][0]).toContain('skip=1000');
+  });
+
+  it('stops after ten full pages even when total says there are more', async () => {
+    // Bounded on purpose: a total that never stops growing must not hold a
+    // request open until the deadline kills it. Ten thousand rules is the
+    // documented ceiling of this source.
+    const page = (start: number) =>
+      Array.from({ length: 1000 }, (_unused, index) => ({
+        fields: { basePath: `/p${start + index}`, targetPath: `/p${start + index}-x`, matchParams: { utm_term: 'x' } }
+      }));
+    let call = 0;
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: page(call++ * 1000), total: 50_000 })
+    })) as unknown as typeof fetch;
+    const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl });
+    expect(await source.getRoutes()).toHaveLength(10_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
   });
 
   it('stops on a short page even when total disagrees', async () => {

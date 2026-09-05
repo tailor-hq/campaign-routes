@@ -53,9 +53,13 @@ First release. Not yet published.
   (private ranges, link-local, carrier-grade NAT, `0.0.0.0`, the IPv6
   unspecified and NAT64 forms, credentials, non-http) is refused under every
   policy. An `origin` or `trustedOrigins` entry that is not an absolute
-  origin throws at construction. The endpoint fetch never follows a redirect
+  origin throws at construction, as does a `path` without a leading slash or
+  an `origin` carrying credentials. The endpoint fetch never follows a redirect
   off its own origin (one same-origin hop, for `trailingSlash: true`), and a
-  refused origin is reported to `onError` with its reason.
+  refused origin is reported to `onError` with its reason; a read with no
+  origin and none pinned is refused rather than answered from whichever
+  origin read last. The literal-address backstop also covers Azure's metadata
+  address, `192.0.0.0/24`, `198.18.0.0/15`, multicast, IPv6 multicast and 6to4.
 - A duration that is not one (`NaN`, `Infinity`, negative) falls back to its
   default rather than silently disabling the cache, the outage bound or every
   fetch, and the outage bound is never shorter than the TTL.

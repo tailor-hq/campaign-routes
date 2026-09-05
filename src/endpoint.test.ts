@@ -692,6 +692,85 @@ describe('createEndpointRouteSource', () => {
     expect(isRefusedRequestOrigin('http://[::ffff:a9fe:a9fe]')).toBe(true);
   });
 
+  it('refuses to be built on a path without a leading slash, or an origin carrying credentials', () => {
+    // `origin + path` with a path that lost its slash parses as another host:
+    // `rules@evil.example` makes `https://site.test@evil.example`. And an
+    // origin with basic auth would be silently stripped and answer 401 forever.
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    expect(() => createEndpointRouteSource({ fetchImpl, path: 'rules@evil.example' })).toThrow(/path must start/);
+    expect(() => createEndpointRouteSource({ fetchImpl, origin: 'https://user:pw@rules.internal' })).toThrow(
+      /must not carry credentials/
+    );
+    expect(() => createEndpointRouteSource({ fetchImpl, path: '/_tailor/rules' })).not.toThrow();
+  });
+
+  it('refuses a read with no origin when none is pinned, and says so', async () => {
+    // "Whichever origin read last" could be a scanner's forged Host, and a
+    // caller that forgot the origin must not see every campaign off silently.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const onError = jest.fn();
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl, onError });
+    expect(await source.getRoutes()).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect((onError.mock.calls[0]?.[0] as { reason: string }).reason).toBe('no-origin');
+    // pageExists with no origin still answers from the last read, which is
+    // evidence in hand, and "nothing read yet" is unknown.
+    expect(source.pageExists('/anything')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('names the reason for every kind of refusal', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const reasons = async (config: Parameters<typeof createEndpointRouteSource>[0], origin: string) => {
+      const onError = jest.fn();
+      const source = createEndpointRouteSource({ ...config, fetchImpl: respondWith({ routes: [ROUTE], paths: [] }), onError });
+      await source.getRoutes(origin);
+      return (onError.mock.calls[0]?.[0] as { reason?: string } | undefined)?.reason;
+    };
+    expect(await reasons({ trustedOrigins: ['https://www.example.com'] }, 'https://evil.example')).toBe('allowlist');
+    expect(await reasons({}, 'http://10.0.0.5')).toBe('unsafe-address');
+    expect(await reasons({}, 'not a url')).toBe('malformed');
+    warn.mockRestore();
+  });
+
+  it('answers pageExists with unknown for a refused origin, and reports the refusal', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl: respondWith({ routes: [ROUTE], paths: [] }), onError });
+    expect(source.pageExists('/pricing-enterprise', 'http://169.254.169.254')).toBe(true);
+    expect((onError.mock.calls[0]?.[0] as { reason: string }).reason).toBe('unsafe-address');
+    warn.mockRestore();
+  });
+
+  it('draws the private-range boundaries where the RFCs do', () => {
+    expect(isRefusedRequestOrigin('http://172.15.255.255')).toBe(false);
+    expect(isRefusedRequestOrigin('http://172.16.0.0')).toBe(true);
+    expect(isRefusedRequestOrigin('http://172.31.255.255')).toBe(true);
+    expect(isRefusedRequestOrigin('http://172.32.0.0')).toBe(false);
+    expect(isRefusedRequestOrigin('http://100.63.255.255')).toBe(false);
+    expect(isRefusedRequestOrigin('http://100.64.0.0')).toBe(true);
+    expect(isRefusedRequestOrigin('http://100.127.255.255')).toBe(true);
+    expect(isRefusedRequestOrigin('http://100.128.0.0')).toBe(false);
+    // The ones a cloud metadata service or a reserved block hides behind.
+    expect(isRefusedRequestOrigin('http://168.63.129.16')).toBe(true);
+    expect(isRefusedRequestOrigin('http://168.63.129.17')).toBe(false);
+    expect(isRefusedRequestOrigin('http://192.0.0.192')).toBe(true);
+    expect(isRefusedRequestOrigin('http://198.18.0.1')).toBe(true);
+    expect(isRefusedRequestOrigin('http://224.0.0.1')).toBe(true);
+    expect(isRefusedRequestOrigin('http://[ff02::1]')).toBe(true);
+    expect(isRefusedRequestOrigin('http://[2002:a00:5::1]')).toBe(true);
+    expect(isRefusedRequestOrigin('https://www.example.com')).toBe(false);
+  });
+
+  it('reports a redirect that carries no Location as what it is', async () => {
+    const fetchImpl = jest.fn(async () => ({ ok: false, status: 304, headers: new Headers(), json: async () => ({}) })) as unknown as typeof fetch;
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl, onError });
+    expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+    expect(String((onError.mock.calls[0] as unknown[])[0])).toContain('304 with no Location');
+  });
+
   it('bounds the reads in flight, so a burst of new origins cannot fan out into a burst of requests', async () => {
     // The cache size bounds what is remembered, not what is fetched: each new
     // origin starts a read before anything is evicted. Twelve origins arriving

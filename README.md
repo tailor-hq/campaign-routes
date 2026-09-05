@@ -39,7 +39,8 @@ Three moving parts, and only the last two are code you write, once:
    string, it matches the URL against the rules and, on a hit, rewrites to the
    campaign page. It gets the rules from `/api/campaign-routes`, keeps them in
    its own memory for 60 seconds, and refreshes behind a response rather than
-   in front of one, so no visitor ever waits on the read.
+   in front of one, so after the first load no visitor waits on the read (ship
+   a `bootstrap` and not even the first one does).
 
 ```
 marketer publishes     your route handler         middleware, per isolate      per request
@@ -48,8 +49,9 @@ in the CMS             returns rules + pages       behind the response          
 ```
 
 So when a marketer publishes or unpublishes a rule, every server that is
-handling traffic picks it up on its next refresh: live within a couple of
-minutes at the default TTL, with no deploy and no code change. The request
+handling traffic picks it up on its next refresh: live within a few minutes at
+the default TTL (the route handler's own `revalidate = 60` adds a minute at
+worst), with no deploy and no code change. The request
 that notices the cache has lapsed is still served the old rules, which is why
 it is "a couple" and not one.
 
@@ -74,6 +76,10 @@ exists as an unpublished example; see the note further down.
 npm install @tailor-ai/campaign-routes
 ```
 
+ESM only, with `exports` conditions. A project on `moduleResolution: "node"`
+or a CommonJS `require` will not resolve the subpaths; Next.js projects on
+`bundler` or `node16` resolution do.
+
 ### Next.js
 
 Two files, which are steps 3 and 2 above. `middleware.ts` is step 3:
@@ -83,11 +89,16 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createEndpointRouteSource } from '@tailor-ai/campaign-routes/endpoint';
 import { campaignRouteFor } from '@tailor-ai/campaign-routes/next';
 
-// On Vercel or Netlify this is enough: the platform vouches for the Host
-// header, so the rules are read from the request's own origin and preview
-// deploys work with no configuration. (A preview behind Vercel's Deployment
-// Protection answers the middleware's own fetch with a 401, so campaigns are
-// off there until /api/campaign-routes is allowed through.)
+// On Vercel this is enough: the platform vouches for the Host header, so the
+// rules are read from the request's own origin and preview deploys work with
+// no configuration. (Netlify is treated the same way and has not been driven
+// here yet. A preview behind Vercel's Deployment Protection answers the
+// middleware's own fetch with a 401, so campaigns are off there until
+// /api/campaign-routes is allowed through.)
+//
+// Do not ship a `vercel env pull` .env.local to a self-hosted production: it
+// carries VERCEL=1, which would make that box trust the Host header as if the
+// platform stood behind it. Pinning `origin` (below) closes that regardless.
 //
 // Self-hosting with `next start`? In production this reads nothing (and warns
 // once) until you pin the address your app listens on, which is where the
@@ -182,7 +193,8 @@ A rule is three fields, and they live in your CMS rather than in this code:
 
 `basePath` and `targetPath` must be rooted paths on your own site. Both are
 compared ignoring trailing slashes and case; the page that gets served is
-`targetPath` exactly as you wrote it.
+`targetPath` with its case preserved (surrounding whitespace and a trailing
+slash are trimmed).
 
 **A rule matches when the request carries everything it names, and may carry
 more.** A real ad click never arrives with only the parameters somebody targeted
@@ -210,8 +222,10 @@ here is the same shape: "this page, for visitors who arrived from that ad,
 serve that page instead". That is a statement about content, so it belongs with
 the content, under the roles, workflows and publish gates the content already
 has. Tailor writes every rule as a draft; someone on your team publishing it is
-what turns the campaign on, and unpublishing it is what turns it off. No new
-permission, no new tool, no request to an engineer per campaign.
+what turns the campaign on, and unpublishing it is what turns it off (as long
+as your route handler reads with the Delivery client, which serves published
+entries only, and not the Preview one). No new permission, no new tool, no
+request to an engineer per campaign.
 
 **The alternatives are each worse in a specific way.** `rewrites()` in
 `next.config.js` means a deploy per campaign, which is the cost this removes.
@@ -291,9 +305,15 @@ something a crawler *does* send, so don't.
 
 ## What it will not do
 
-- **It never fails your page load.** Every error path — the CMS down, a stalled
-  connection, a malformed rule, a bug in here — returns "serve the page you were
-  going to serve". There is no configuration for this.
+- **It never fails your page load, once built.** Every error path at request
+  time — the CMS down, a stalled connection, a malformed rule, a bug in here —
+  returns "serve the page you were going to serve". There is no configuration
+  for this. The one place it does throw is construction: a malformed `origin`,
+  `trustedOrigins` entry, `path` or Contentful `host` throws when the source is
+  created, so a bad deploy fails at deploy rather than under traffic. Because
+  the source is built at module scope of `middleware.ts`, an env variable that
+  is unset in production (`origin: process.env.SELF_ORIGIN ?? ''`) fails the
+  deploy the same way, which is the point.
 - **It never sends a visitor off your site.** A rule whose target is an absolute
   URL, a protocol-relative `//host`, or carries a backslash, control character,
   `?` or `#` is refused. These strings come out of a CMS that people edit, and
@@ -324,7 +344,8 @@ something a crawler *does* send, so don't.
   failed reads every visitor gets their original page until a read succeeds,
   so a campaign you unpublished to pull bad content cannot outlive an outage by
   more than that. Pass `onError` to hear about every failed read from your own
-  monitoring; the package itself logs nothing.
+  monitoring; the package itself logs nothing, except one `console.warn` the
+  first time it refuses to read rules for a request origin.
 
 ## Next.js version note
 

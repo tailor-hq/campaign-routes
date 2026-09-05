@@ -254,15 +254,22 @@ export const isRefusedRequestOrigin = (origin: string): boolean => {
     if (a === 192 && b === 168) return true; // RFC 1918
     if (a === 169 && b === 254) return true; // link-local, and every cloud metadata service
     if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT, and some metadata services
+    if (a === 168 && b === 63 && host === '168.63.129.16') return true; // Azure's wireserver, a public-range address that is its metadata service
+    if (a === 192 && b === 0 && Number(ipv4[3]) === 0) return true; // 192.0.0.0/24, IETF protocol assignments (metadata on some clouds)
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15, benchmarking
+    if (a >= 224) return true; // multicast and reserved, 224.0.0.0/3
     return false;
   }
   if (host.includes(':')) {
-    // IPv6: the unspecified address, link-local, unique-local, and NAT64,
-    // which carries an IPv4 address this list would otherwise not see.
+    // IPv6: the unspecified address, link-local, unique-local, multicast, and
+    // the two forms that carry an IPv4 address this list would otherwise not
+    // see: NAT64 and 6to4.
     if (host === '::') return true;
     if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb')) return true;
     if (host.startsWith('fc') || host.startsWith('fd')) return true;
+    if (host.startsWith('ff')) return true;
     if (host.startsWith('64:ff9b:')) return true;
+    if (host.startsWith('2002:')) return true;
   }
   return false;
 };
@@ -318,7 +325,10 @@ export const requestOriginPolicy = (
 ): RequestOriginPolicy => {
   // The build's own word comes first: `next dev` sets NODE_ENV=development and
   // is never the platform, whatever `vercel env pull` left in .env.local (it
-  // writes VERCEL=1 alongside the project's variables).
+  // writes VERCEL=1 alongside the project's variables). The production half of
+  // that cannot be told apart here: a self-host that ships that .env.local
+  // reads as the platform. The README says not to, and a pinned `origin`
+  // closes it regardless.
   if (env.NODE_ENV === 'development' || env.NODE_ENV === 'test') return 'development';
   if (env.VERCEL || env.NETLIFY) return 'platform';
   return 'refuse';
@@ -329,7 +339,8 @@ export type OriginRefusalReason =
   | 'allowlist'
   | 'unsafe-address'
   | 'loopback-on-platform'
-  | 'malformed';
+  | 'malformed'
+  | 'no-origin';
 
 /**
  * What `onError` is handed when a request origin is refused: the origin, and
@@ -354,7 +365,9 @@ const REFUSAL_ADVICE: Record<OriginRefusalReason, string> = {
     'it names a private or link-local address, carries credentials, or is not http(s), which is refused under every policy. Pin origin if the endpoint really lives there.',
   'loopback-on-platform':
     'loopback is refused on a platform deployment. Pin origin if a local endpoint is intended.',
-  malformed: 'it is not an absolute http(s) origin.'
+  malformed: 'it is not an absolute http(s) origin.',
+  'no-origin':
+    'no origin was given and none is pinned. Pass the request origin to getRoutes (the Next adapter does), or pin origin.'
 };
 
 const originRefused = (origin: string, reason: OriginRefusalReason): OriginRefusedError =>
@@ -400,12 +413,23 @@ const isPayload = (value: unknown): value is CampaignRoutesPayload =>
  * control; a malformed rule is skipped rather than failing the payload, and a
  * path that is not a string is dropped.
  */
+/**
+ * The page list of each payload, normalised once, so `pageExists` is a lookup
+ * rather than a pass over every path per candidate rule per request. Keyed
+ * weakly on the payload: it lives exactly as long as the cache entry does and
+ * never appears on the public shape.
+ */
+const normalizedPaths = new WeakMap<CampaignRoutesPayload, Set<string>>();
+
 const frozenPayload = (routes: unknown, paths: unknown): CampaignRoutesPayload => {
   const payload = campaignRoutesPayload(
     normalizeRoutes(routes),
     Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string') : undefined
   );
-  if (payload.paths) Object.freeze(payload.paths);
+  if (payload.paths) {
+    Object.freeze(payload.paths);
+    normalizedPaths.set(payload, new Set(payload.paths.map(normalize)));
+  }
   return Object.freeze(payload);
 };
 
@@ -455,6 +479,17 @@ export const createEndpointRouteSource = (
     throw new Error(
       `campaign routes: origin must be an absolute http(s) origin, got ${JSON.stringify(config.origin)}`
     );
+  }
+  // Canonicalisation drops credentials silently, and a customer who gated the
+  // endpoint with basic auth would otherwise see `answered 401` forever with
+  // nothing saying why.
+  if (config.origin !== undefined && new URL(config.origin).username !== '') {
+    throw new Error('campaign routes: origin must not carry credentials; the endpoint is read without any');
+  }
+  // `origin + path` with a path that lost its leading slash parses as a
+  // different host: `rules@evil.example` makes `https://site.test@evil.example`.
+  if (config.path !== undefined && config.path.charAt(0) !== '/') {
+    throw new Error(`campaign routes: path must start with "/", got ${JSON.stringify(config.path)}`);
   }
   // Normalised once, so `https://Example.com` and `https://example.com/` match
   // the origin a URL actually reports.
@@ -541,7 +576,10 @@ export const createEndpointRouteSource = (
           let response = await doFetch(origin + path, { signal, redirect: 'manual' });
           if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('location');
-            const next = location === null ? null : sameOriginRedirect(location, origin);
+            if (location === null) {
+              throw new Error('campaign routes endpoint answered ' + String(response.status) + ' with no Location');
+            }
+            const next = sameOriginRedirect(location, origin);
             if (next === null) throw new Error('campaign routes endpoint redirected off its own origin');
             response = await doFetch(next, { signal, redirect: 'manual' });
             if (response.status >= 300 && response.status < 400) {
@@ -580,7 +618,7 @@ export const createEndpointRouteSource = (
    * otherwise the policy decides, and the destinations only a server could
    * reach are refused under every policy.
    */
-  const resolveOrigin = (origin?: string): string | null => {
+  const resolveOrigin = (origin: string | undefined, purpose: 'read' | 'answer'): string | null => {
     if (pinnedOrigin) return pinnedOrigin;
     if (typeof origin === 'string' && origin.length > 0) {
       // The canonical origin is what is fetched and what keys the cache, so a
@@ -597,12 +635,18 @@ export const createEndpointRouteSource = (
       if (policy === 'platform' && isLoopbackOrigin(canonical)) return refuse(canonical, 'loopback-on-platform');
       return canonical;
     }
+    // No origin given and none pinned. A read has nothing to read from, and
+    // "whichever origin read last" could be a scanner's forged Host, so it is
+    // refused — loudly, since a caller that forgot the origin would otherwise
+    // see every campaign off with nothing saying why. Answering `pageExists`
+    // from the last read is different: it is evidence already in hand.
+    if (purpose === 'read') return refuse('(none)', 'no-origin');
     return lastOrigin.length > 0 ? lastOrigin : null;
   };
 
   return {
     getRoutes: async (origin?: string) => {
-      const resolved = resolveOrigin(origin);
+      const resolved = resolveOrigin(origin, 'read');
       // A refused origin reads nothing: no fetch is made, and no other origin's
       // rules are handed back in its place.
       if (resolved === null) return [];
@@ -611,7 +655,7 @@ export const createEndpointRouteSource = (
       return payload ? payload.routes : [];
     },
     pageExists: (candidate: string, origin?: string) => {
-      const resolved = resolveOrigin(origin);
+      const resolved = resolveOrigin(origin, 'answer');
       // `get`, not `loaderFor`: an origin nothing has read yet has no evidence
       // to offer, and creating a loader to say so would let this synchronous
       // path grow the map.
@@ -620,11 +664,8 @@ export const createEndpointRouteSource = (
       // evidence either way, so do not refuse on it. An empty list is not that
       // case — it is the endpoint saying nothing exists, and it refuses below.
       if (!payload || payload.paths === undefined) return true;
-      const wanted = normalize(candidate);
-      for (let index = 0; index < payload.paths.length; index += 1) {
-        if (normalize(payload.paths[index]!) === wanted) return true;
-      }
-      return false;
+      const known = normalizedPaths.get(payload);
+      return known ? known.has(normalize(candidate)) : false;
     }
   };
 };

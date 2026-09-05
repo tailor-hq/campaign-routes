@@ -142,7 +142,11 @@ describeBuilt('the built output', () => {
 
 describeBuilt('the tarball', () => {
   it('contains the docs and no source maps of our internals', () => {
-    const listing = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+    // `--ignore-scripts`: a dry run still runs `prepack`, which cleans and
+    // rebuilds `dist` — from inside a test, racing lage's own build of the
+    // same directory. The listing is what is asserted; the build is ordered
+    // ahead of this suite by lage (`#test` depends on `build`) and by CI.
+    const listing = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
       cwd: PACKAGE_ROOT,
       encoding: 'utf8'
     });
