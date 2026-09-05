@@ -139,14 +139,18 @@ it refuses to read rules for a request origin.
 
 ## What it will not do, in full
 
-- **It never fails your page load, once built.** Every error path at request
-  time returns "serve the page you were going to serve". The one place it
-  throws is construction: a malformed `origin`, `trustedOrigins` entry, `path`
-  or Contentful `host` throws when the source is created, so a bad deploy
-  fails at deploy rather than under traffic. Because the source is built at
-  module scope of `middleware.ts`, an env variable that is unset in production
-  (`origin: process.env.SELF_ORIGIN ?? ''`) fails the deploy the same way,
-  which is the point.
+- **It never fails your page load, once the source is built.** Every error
+  path at request time returns "serve the page you were going to serve". The
+  one place it throws is construction: a malformed `origin`, `trustedOrigins`
+  entry, `path` or Contentful `host` throws when the source is created. On
+  Next.js the source is built at module scope of `middleware.ts`, and that
+  module is evaluated on the first request after a deploy, not by
+  `next build`, so a bad value (an env variable unset in production, say
+  `origin: process.env.SELF_ORIGIN ?? ''`) fails every request the middleware
+  covers until it is fixed, with an error that names the option. Throwing is
+  still the right call, because the alternative is silently falling through to
+  request trust nobody asked for; the mitigation is to check configuration on
+  a preview deploy before promoting.
 - **It never sends a visitor off your site.** A rule whose target is an
   absolute URL, a protocol-relative `//host`, or carries a backslash, control
   character, `?` or `#` is refused. These strings come out of a CMS that

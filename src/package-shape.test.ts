@@ -159,7 +159,12 @@ describeBuilt('the tarball', () => {
     });
     const files: string[] = JSON.parse(listing)[0].files.map((f: { path: string }) => f.path);
 
-    expect(files).toEqual(expect.arrayContaining(['README.md', 'LICENSE', 'package.json']));
+    // The README links SECURITY.md and the design notes, so both ship: a link
+    // that resolves on GitHub and dangles on npm is the kind of gap a
+    // customer's reviewer hits first.
+    expect(files).toEqual(
+      expect.arrayContaining(['README.md', 'LICENSE', 'package.json', 'SECURITY.md', 'docs/design-notes.md'])
+    );
     expect(files.some((f) => f.startsWith('dist/'))).toBe(true);
     // Tests, configs and the source tree are not a customer's business.
     expect(files.filter((f) => f.endsWith('.test.js') || f.endsWith('.test.ts'))).toEqual([]);

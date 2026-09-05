@@ -153,8 +153,12 @@ conversion. It is never awaited and cannot throw into the request.
 ## Guarantees
 
 - **Never fails a page load.** Every error at request time, the CMS down or a
-  malformed rule, means "serve the page you were going to serve". A malformed
-  configuration throws at build time instead, so a bad deploy fails at deploy.
+  malformed rule, means "serve the page you were going to serve". The one
+  exception is a malformed configuration (a bad `origin`, `trustedOrigins`
+  entry or `path`): the source throws when the middleware module loads, which
+  on Next.js is the first request after a deploy, and every request the
+  middleware covers fails until it is fixed. The error names the option.
+  Check configuration on a preview deploy before promoting.
 - **Never sends a visitor off your site.** A target that is not a rooted path
   on your own site is refused.
 - **Never redirects, never sets a cookie, never phones home.** The only
