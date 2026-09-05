@@ -55,7 +55,9 @@ import { campaignRouteFor } from '@tailor-ai/campaign-routes/next';
 
 // On Vercel or Netlify this is enough: the platform vouches for the Host
 // header, so the rules are read from the request's own origin and preview
-// deploys work with no configuration.
+// deploys work with no configuration. (A preview behind Vercel's Deployment
+// Protection answers the middleware's own fetch with a 401, so campaigns are
+// off there until /api/campaign-routes is allowed through.)
 //
 // Self-hosting with `next start`? In production this reads nothing (and warns
 // once) until you pin the address your app listens on, which is where the

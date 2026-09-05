@@ -271,7 +271,9 @@ describe('createEndpointRouteSource', () => {
     // nor shared with the cache, where an edit would reroute later visitors.
     const bootstrap = { routes: [{ ...ROUTE, matchParams: { ...ROUTE.matchParams } }], paths: ['/x'] };
     const fetchImpl = jest.fn(() => new Promise<never>(() => {})) as unknown as typeof fetch;
-    const source = createEndpointRouteSource({ fetchImpl, bootstrap });
+    // A short deadline, so the abort timer a never-settling fetch arms does
+    // not outlive the test.
+    const source = createEndpointRouteSource({ fetchImpl, bootstrap, timeoutMs: 50 });
 
     const served = await source.getRoutes('https://site.test');
     expect(served).toEqual([ROUTE]);
@@ -456,7 +458,12 @@ describe('createEndpointRouteSource', () => {
       expect(requestOriginPolicy({ VERCEL: '1', NODE_ENV: 'production' })).toBe('platform');
       expect(requestOriginPolicy({ NETLIFY: 'true', NODE_ENV: 'production' })).toBe('platform');
       expect(requestOriginPolicy({ NODE_ENV: 'development' })).toBe('development');
-      expect(requestOriginPolicy({})).toBe('development');
+      expect(requestOriginPolicy({ NODE_ENV: 'test' })).toBe('development');
+      // Unknown is refused, never assumed to be development: an unset NODE_ENV,
+      // or a runtime with no `process` at all, is exactly a Cloudflare Worker
+      // or a Netlify edge function in production.
+      expect(requestOriginPolicy({})).toBe('refuse');
+      expect(requestOriginPolicy({ NODE_ENV: 'staging' })).toBe('refuse');
       expect(requestOriginPolicy({ NODE_ENV: 'production' })).toBe('refuse');
     });
 
@@ -502,6 +509,37 @@ describe('createEndpointRouteSource', () => {
     });
   });
 
+  it('refuses to be built on an origin or a trustedOrigins entry that is not an absolute origin', () => {
+    // `origin: process.env.SELF_ORIGIN ?? ''` with the variable unset would
+    // otherwise fall through to request trust nobody asked for; an entry with
+    // no scheme would be dropped silently and refuse every request.
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    expect(() => createEndpointRouteSource({ fetchImpl, origin: '' })).toThrow(/origin must be/);
+    expect(() => createEndpointRouteSource({ fetchImpl, origin: 'www.example.com' })).toThrow(/origin must be/);
+    expect(() => createEndpointRouteSource({ fetchImpl, trustedOrigins: ['www.example.com'] })).toThrow(
+      /trustedOrigins entry/
+    );
+    expect(() => createEndpointRouteSource({ fetchImpl, trustedOrigins: ['https://www.example.com'] })).not.toThrow();
+  });
+
+  it('reads nothing for any request origin when trustedOrigins is an empty list', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({ fetchImpl, trustedOrigins: [] });
+    expect(await source.getRoutes('https://www.example.com')).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('does not refuse a hostname, which is why the policy is the gate and this list the backstop', () => {
+    // Nothing here resolves DNS. A name pointing at a metadata service passes
+    // the literal-address check; what stops the fetch is the policy (refuse),
+    // the platform vouching for the name, or an allowlist that lacks it.
+    expect(isRefusedRequestOrigin('http://metadata.google.internal')).toBe(false);
+    expect(isRefusedRequestOrigin('http://[::]')).toBe(true);
+    expect(isRefusedRequestOrigin('http://[64:ff9b::a9fe:a9fe]')).toBe(true);
+  });
+
   it('bounds the reads in flight, so a burst of new origins cannot fan out into a burst of requests', async () => {
     // The cache size bounds what is remembered, not what is fetched: each new
     // origin starts a read before anything is evicted. Twelve origins arriving
@@ -526,5 +564,30 @@ describe('createEndpointRouteSource', () => {
     const results = await Promise.all(reads);
     expect(results.filter((routes) => routes.length === 1)).toHaveLength(4);
     expect(results.filter((routes) => routes.length === 0)).toHaveLength(8);
+  });
+
+  it('treats a read it declined for concurrency as deferred, not failed', async () => {
+    // The ninth hostname in a burst must not be put into backoff, and the
+    // customer's monitoring must not hear about a healthy upstream.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = jest.fn(async () => {
+      await gate;
+      return { ok: true, status: 200, json: async () => ({ routes: [ROUTE], paths: [] }) };
+    }) as unknown as typeof fetch;
+    const onError = jest.fn();
+    const source = createEndpointRouteSource({ fetchImpl, onError });
+
+    const reads = Array.from({ length: 5 }, (_, index) => source.getRoutes(`https://host-${index}.example`));
+    release();
+    await Promise.all(reads);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(onError).not.toHaveBeenCalled();
+
+    // The declined origin reads on its very next request.
+    expect(await source.getRoutes('https://host-4.example')).toEqual([ROUTE]);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
 });

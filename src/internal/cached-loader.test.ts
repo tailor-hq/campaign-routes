@@ -194,6 +194,89 @@ describe('createCachedLoader', () => {
     });
   });
 
+  describe('a duration that is not one', () => {
+    // `Number(process.env.CAMPAIGN_TTL_MS)` with the variable unset is NaN, and
+    // NaN fails every comparison silently. Each case here is a silent outage
+    // without the guard: one read per request, rules served forever, or every
+    // read aborted before it starts.
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('falls back to the default TTL for %p', async (ttlMs) => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const load = jest.fn(async () => 'v');
+      const loader = createCachedLoader({ ttlMs, timeoutMs: 100, load });
+      await loader.read();
+      now += 59_000;
+      await loader.read();
+      expect(load).toHaveBeenCalledTimes(1);
+      now += 2_000;
+      await loader.read();
+      await settle();
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('falls back to the default deadline for %p', async (timeoutMs) => {
+      // setTimeout(NaN) fires at once: a real deadline lets a 20ms read land.
+      const load = jest.fn(
+        (signal: AbortSignal) =>
+          new Promise<string>((resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')));
+            setTimeout(() => resolve('v'), 20);
+          })
+      );
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs, load });
+      expect(await loader.read()).toBe('v');
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('falls back to the default outage bound for %p', async (maxStaleMs) => {
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let failing = false;
+      const load = jest.fn(async () => {
+        if (failing) throw new Error('down');
+        return 'v';
+      });
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, maxStaleMs, load });
+      await loader.read();
+      failing = true;
+      now += 3_599_000;
+      expect(await loader.read()).toBe('v');
+      now += 2_000;
+      expect(await loader.read()).toBeNull();
+    });
+
+    it('never lets the outage bound undercut the TTL, so read and peek agree', async () => {
+      // Below the TTL, `read` (freshness first) would serve rules that `peek`
+      // (bound first) called gone, and pageExists would answer "unknown" for
+      // rules getRoutes was still serving.
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const load = jest.fn(async () => 'v');
+      const loader = createCachedLoader({ ttlMs: 10_000, timeoutMs: 100, maxStaleMs: 1, load });
+      await loader.read();
+      now += 5_000;
+      expect(await loader.read()).toBe('v');
+      expect(loader.peek()).toBe('v');
+    });
+  });
+
+  describe('a read the loader declined', () => {
+    it('is not a failure: no backoff, no onError, and the next read tries again', async () => {
+      const { deferredRead } = await import('./cached-loader.js');
+      let decline = true;
+      const load = jest.fn(async () => {
+        if (decline) throw deferredRead();
+        return 'v';
+      });
+      const onError = jest.fn();
+      const loader = createCachedLoader({ ttlMs: 1_000, timeoutMs: 100, load, onError });
+      expect(await loader.read()).toBeNull();
+      expect(onError).not.toHaveBeenCalled();
+      decline = false;
+      expect(await loader.read()).toBe('v');
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('keeping the background refresh alive', () => {
     it('hands the refresh to waitUntil, so a runtime that cancels floating work still finishes it', async () => {
       let now = 1_000_000;

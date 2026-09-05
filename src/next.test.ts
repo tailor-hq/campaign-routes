@@ -66,6 +66,41 @@ describe('campaignRouteFor', () => {
     warn.mockRestore();
   });
 
+  it('reads nothing in production off a platform, whatever public origin the request names', async () => {
+    // The policy, end to end through the adapter: a self-hosted production
+    // build with no origin configured must not fetch from the request's own
+    // hostname, however public it looks, because nothing vouched for it.
+    const savedNodeEnv = process.env.NODE_ENV;
+    const savedVercel = process.env.VERCEL;
+    const savedNetlify = process.env.NETLIFY;
+    process.env.NODE_ENV = 'production';
+    delete process.env.VERCEL;
+    delete process.env.NETLIFY;
+    try {
+      const { createEndpointRouteSource } = await import('./endpoint.js');
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const fetchImpl = jest.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ routes: ROUTES, paths: [] })
+      })) as unknown as typeof fetch;
+      const endpointSource = createEndpointRouteSource({ fetchImpl });
+
+      const target = await campaignRouteFor(
+        request('https://www.example.com/product/analytics?utm_term=enterprise+plan'),
+        endpointSource
+      );
+      expect(target).toBeNull();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    } finally {
+      process.env.NODE_ENV = savedNodeEnv;
+      if (savedVercel !== undefined) process.env.VERCEL = savedVercel;
+      if (savedNetlify !== undefined) process.env.NETLIFY = savedNetlify;
+    }
+  });
+
   it('does not touch the rule source for a request with no query string', async () => {
     // Organic traffic is the majority of a marketing site's requests. Answering
     // it before the fetch is what keeps the common case off the network.

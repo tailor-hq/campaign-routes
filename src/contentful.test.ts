@@ -212,7 +212,15 @@ describe('createContentfulRouteSource', () => {
   it('copies and freezes a bootstrap, so the caller cannot change routing after the fact', async () => {
     const bootstrap: CampaignRoute[] = [{ ...ROUTE_FIELDS, matchParams: { ...ROUTE_FIELDS.matchParams } }];
     const fetchImpl = jest.fn(() => new Promise<never>(() => {})) as unknown as typeof fetch;
-    const source = createContentfulRouteSource({ spaceId: 's', deliveryToken: 't', fetchImpl, bootstrap });
+    const source = createContentfulRouteSource({
+      spaceId: 's',
+      deliveryToken: 't',
+      fetchImpl,
+      bootstrap,
+      // A short deadline, so the abort timer a never-settling fetch arms does
+      // not outlive the test.
+      timeoutMs: 50
+    });
 
     const served = await source.getRoutes();
     expect(served).toEqual([ROUTE_FIELDS]);

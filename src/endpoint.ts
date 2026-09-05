@@ -32,15 +32,19 @@
  * quietly not routing.
  */
 
-import { createCachedLoader, type CachedLoader } from './internal/cached-loader.js';
+import {
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_TTL_MS,
+  createCachedLoader,
+  deferredRead,
+  duration,
+  type CachedLoader
+} from './internal/cached-loader.js';
 import { normalizeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 
 /** The path Tailor's guide tells customers to serve the rules on. */
 export const DEFAULT_ENDPOINT_PATH = '/api/campaign-routes';
-
-const DEFAULT_TTL_MS = 60_000;
-const DEFAULT_TIMEOUT_MS = 2_500;
 
 export interface CampaignRoutesPayload {
   routes: CampaignRoute[];
@@ -204,6 +208,13 @@ const canonicalOrigin = (value: string): string | null => {
  * package, and a request to a server's own loopback reaches only what that
  * server already exposes to itself. A self-hosted production deployment should
  * close even that with `origin` or `trustedOrigins`.
+ *
+ * **Literal addresses only.** Nothing here resolves DNS, so a hostname that
+ * points at a private address (`metadata.google.internal`, an attacker's own
+ * record) passes this check. That is why the policy in `requestOriginPolicy`
+ * is the gate and this list is the backstop behind it: under `refuse` nothing
+ * is fetched, under `platform` the platform vouches for the hostname, under
+ * `trustedOrigins` only the names the deployment listed are read.
  */
 export const isRefusedRequestOrigin = (origin: string): boolean => {
   let url: URL;
@@ -246,9 +257,12 @@ export const isRefusedRequestOrigin = (origin: string): boolean => {
     return false;
   }
   if (host.includes(':')) {
-    // IPv6: link-local and unique-local.
+    // IPv6: the unspecified address, link-local, unique-local, and NAT64,
+    // which carries an IPv4 address this list would otherwise not see.
+    if (host === '::') return true;
     if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb')) return true;
     if (host.startsWith('fc') || host.startsWith('fd')) return true;
+    if (host.startsWith('64:ff9b:')) return true;
   }
   return false;
 };
@@ -278,10 +292,13 @@ export const isLoopbackOrigin = (origin: string): boolean => {
  *   hands the app a request whose Host it did not itself resolve, so the origin
  *   is the platform's word rather than the client's. Any public origin is read;
  *   loopback is not, since production has no business reaching it.
- * - **`development`** — anything not built for production: public origins and
- *   loopback both, so `next dev` and a preview against a local endpoint work
- *   with no configuration.
- * - **`refuse`** — production, off any such platform. A self-hosted Next.js or
+ * - **`development`** — a build that says so: `NODE_ENV` of `development` or
+ *   `test`, which `next dev` and every test runner set. Public origins and
+ *   loopback both, so a first run against a local endpoint needs no
+ *   configuration.
+ * - **`refuse`** — everything else, including an unset `NODE_ENV` and a
+ *   runtime with no `process` at all (Cloudflare Workers, Deno). Unknown is
+ *   refused, never assumed to be development: a self-hosted Next.js or
  *   anything behind a proxy that forwards Host has no vouching to lean on, so
  *   a request-derived origin reads nothing until the deployment says where
  *   its rules are. For a self-hosted `next start` that is a pinned `origin`:
@@ -300,7 +317,7 @@ export const requestOriginPolicy = (
   env: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {}
 ): RequestOriginPolicy => {
   if (env.VERCEL || env.NETLIFY) return 'platform';
-  if (env.NODE_ENV !== 'production') return 'development';
+  if (env.NODE_ENV === 'development' || env.NODE_ENV === 'test') return 'development';
   return 'refuse';
 };
 
@@ -369,14 +386,34 @@ export const createEndpointRouteSource = (
   // A pinned `origin` collapses the map to one entry and the request origin is
   // ignored entirely, which is what makes the option a mitigation rather than
   // decoration.
+  // Both fail at construction, where somebody is looking, rather than per
+  // request. `origin: process.env.SELF_ORIGIN ?? ''` with the variable unset
+  // would otherwise fall through to request trust nobody asked for, and a
+  // `trustedOrigins` entry without a scheme would be dropped silently and
+  // refuse every request with only the one-time warning to say why.
   const pinnedOrigin = config.origin;
+  if (pinnedOrigin !== undefined && canonicalOrigin(pinnedOrigin) === null) {
+    throw new Error(
+      `campaign routes: origin must be an absolute http(s) origin, got ${JSON.stringify(pinnedOrigin)}`
+    );
+  }
   // Normalised once, so `https://Example.com` and `https://example.com/` match
   // the origin a URL actually reports.
   const trustedOrigins = config.trustedOrigins
-    ? new Set(config.trustedOrigins.map(canonicalOrigin).filter((value): value is string => value !== null))
+    ? new Set(
+        config.trustedOrigins.map((value) => {
+          const canonical = canonicalOrigin(value);
+          if (canonical === null) {
+            throw new Error(
+              `campaign routes: trustedOrigins entry must be an absolute http(s) origin, got ${JSON.stringify(value)}`
+            );
+          }
+          return canonical;
+        })
+      )
     : null;
-  const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
+  const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
 
   /** Insertion order is recency: a hit is re-inserted, and eviction takes the head. */
   const loaders = new Map<string, CachedLoader<CampaignRoutesPayload>>();
@@ -421,9 +458,9 @@ export const createEndpointRouteSource = (
       // cache nor is frozen under them.
       bootstrap: config.bootstrap ? frozenPayload(config.bootstrap.routes, config.bootstrap.paths) : undefined,
       load: async (signal) => {
-        if (activeLoads >= MAX_CONCURRENT_LOADS) {
-          throw new Error('campaign routes: too many rule reads in flight');
-        }
+        // Declining is not failing: the origin is not put into backoff and
+        // the customer's monitoring is not told about a healthy upstream.
+        if (activeLoads >= MAX_CONCURRENT_LOADS) throw deferredRead();
         activeLoads += 1;
         try {
           const response = await doFetch(origin + path, { signal });

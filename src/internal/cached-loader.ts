@@ -79,7 +79,35 @@ export interface CachedLoaderConfig<T> {
   awaitStaleRefresh?: boolean;
 }
 
+export const DEFAULT_TTL_MS = 60_000;
+export const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_MAX_STALE_MS = 60 * 60_000;
+
+/**
+ * A duration the caller configured, or the default when it is not one.
+ *
+ * `ttlMs: Number(process.env.CAMPAIGN_TTL_MS)` with the variable unset is
+ * `NaN`, and `NaN` fails every comparison silently: a `NaN` TTL is never fresh
+ * (one upstream read per page request), a `NaN` outage bound never expires
+ * (withdrawn rules served forever), and `setTimeout(NaN)` fires at once (every
+ * read aborted before it starts). Nothing would log any of it.
+ */
+export const duration = (value: number | undefined, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+
+const DEFERRED = 'campaign-routes/deferred-read';
+
+/**
+ * What a `load` throws when it chose not to read this time — a concurrency cap
+ * declining a burst, say. Not a failure: no backoff starts, `onError` is not
+ * told, and the next read tries again. A marker rather than an `Error`
+ * subclass, because `instanceof` on a subclassed `Error` does not survive the
+ * ES5 downlevel this package builds with.
+ */
+export const deferredRead = (): Error => Object.assign(new Error('rule read deferred'), { kind: DEFERRED });
+
+const isDeferredRead = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && (error as { kind?: unknown }).kind === DEFERRED;
 
 export interface CachedLoader<T> {
   /**
@@ -125,7 +153,12 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   let inFlight: Promise<T | null> | null = null;
   let consecutiveFailures = 0;
   let lastFailureAt = 0;
-  const maxStaleMs = config.maxStaleMs ?? DEFAULT_MAX_STALE_MS;
+  const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
+  const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
+  // Never shorter than the TTL: below it `read` (which checks freshness first)
+  // and `peek` (which checks the bound first) would disagree, and `pageExists`
+  // would answer "unknown" for rules `getRoutes` was still serving.
+  const maxStaleMs = Math.max(ttlMs, duration(config.maxStaleMs, DEFAULT_MAX_STALE_MS));
 
   const backoffMs = (): number =>
     Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10));
@@ -156,7 +189,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
 
   const run = async (): Promise<T | null> => {
     const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(), config.timeoutMs);
+    const deadline = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const value = await config.load(controller.signal);
       cached = value;
@@ -178,6 +211,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
       // A failed read does NOT update `cachedAt`, so the next caller retries
       // rather than waiting out a TTL on an error — after the backoff above.
       .catch((error: unknown) => {
+        if (isDeferredRead(error)) return cached;
         consecutiveFailures += 1;
         lastFailureAt = Date.now();
         report(error);
@@ -192,7 +226,7 @@ export const createCachedLoader = <T>(config: CachedLoaderConfig<T>): CachedLoad
   return {
     peek: () => (tooStale() ? null : cached),
     read: async () => {
-      const fresh = cached !== null && Date.now() - cachedAt < config.ttlMs;
+      const fresh = cached !== null && Date.now() - cachedAt < ttlMs;
       if (fresh) return cached;
 
       // An outage has outlived the bound: keep trying behind the request, but

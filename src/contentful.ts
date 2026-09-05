@@ -20,7 +20,7 @@
  * visitor.
  */
 
-import { createCachedLoader } from './internal/cached-loader.js';
+import { DEFAULT_TIMEOUT_MS, DEFAULT_TTL_MS, createCachedLoader, duration } from './internal/cached-loader.js';
 import { freezeRoutes, normalizeRoutes } from './internal/freeze-routes.js';
 import type { CampaignRoute } from './core/index.js';
 import type { RouteSource } from './route-source.js';
@@ -136,8 +136,6 @@ interface ContentfulEntry {
   fields?: Record<string, unknown>;
 }
 
-const DEFAULT_TTL_MS = 60_000;
-const DEFAULT_TIMEOUT_MS = 2_500;
 
 /**
  * The only hosts this will send a token to.
@@ -230,8 +228,8 @@ export const toCampaignRoutes = (items: ContentfulEntry[], locale: string): Camp
 export const createContentfulRouteSource = (config: ContentfulRouteSourceConfig): RouteSource => {
   const environmentId = config.environmentId ?? 'master';
   const locale = config.locale ?? 'en-US';
-  const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
+  const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
   const doFetch = config.fetchImpl ?? fetch;
 
   const host = config.host ?? CONTENTFUL_HOSTS[0]!;

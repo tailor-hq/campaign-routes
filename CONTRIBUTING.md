@@ -2,7 +2,7 @@
 
 ```bash
 npm install
-npm test          # 185 tests
+npm test
 npm run lint      # typechecks the source and the tests
 npm run build     # declarations, then JavaScript with comments stripped
 ```

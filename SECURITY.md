@@ -53,18 +53,27 @@ default fails closed:
   never hands your app a request whose Host it did not itself resolve, so the
   origin is the platform's word rather than the client's. Public origins are
   read with no configuration; loopback is not.
-- **In development** (any build not for production), public origins and
-  loopback both, so `next dev` works with no configuration.
-- **In production anywhere else** — self-hosted, or behind a proxy that
-  forwards Host — a request-derived origin reads **nothing** until you say
-  which hostnames are real, and the source says so with a single
-  `console.warn` rather than silently switching every campaign off.
+- **In development** — a build that says so, `NODE_ENV` of `development` or
+  `test` — public origins and loopback both, so `next dev` works with no
+  configuration.
+- **Everywhere else**, including an unset `NODE_ENV` and a runtime with no
+  `process` at all — self-hosted, behind a proxy that forwards Host, a
+  Cloudflare Worker — a request-derived origin reads **nothing** until you say
+  where the rules are, and the source says so with a single `console.warn`
+  rather than silently switching every campaign off. Unknown is refused,
+  never assumed to be development.
 
-Under every policy the destinations only a server could reach are refused
-outright: private ranges, link-local (where every cloud metadata service
-lives), carrier-grade NAT, `0.0.0.0`, anything carrying credentials, anything
-not `http(s)`. And reads in flight are capped across all origins, so a burst
-of forged Hosts cannot fan out into a burst of server-side requests.
+Behind the policy, a backstop: a request-derived origin naming a **literal
+address** only a server could reach is refused under every policy — private
+ranges, link-local (where every cloud metadata service lives), carrier-grade
+NAT, `0.0.0.0`, the IPv6 unspecified and NAT64 forms, anything carrying
+credentials, anything not `http(s)`. It is a backstop and not the gate because
+nothing here resolves DNS: a hostname pointing at one of those addresses passes
+the literal check, and what stops that fetch is the policy above — nothing is
+read under `refuse`, the platform vouched for the name under `platform`, and
+only the names you listed are read under `trustedOrigins`. Reads in flight are
+capped across all origins, so a burst of forged Hosts cannot fan out into a
+burst of server-side requests.
 
 **Self-hosting with `next start`: pass `origin`**, the address the app listens
 on (`http://localhost:3000`). The origin the middleware sees there is the one

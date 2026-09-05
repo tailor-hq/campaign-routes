@@ -33,18 +33,30 @@ First release. Not yet published.
   (Cloudflare Workers, Vercel's edge runtime); the second makes a stale read
   wait instead, for a runtime that freezes the moment the handler returns.
 - `maxStaleMs` and `onError` on both sources; see Security below.
+- `onMatch`, called when a campaign page is about to be served, so your own
+  analytics can attribute a conversion to the campaign. Never awaited, never
+  able to throw — including an `async` callback, whose rejection is observed for
+  you.
+- `bootstrap`, so the first request of a cold isolate is personalized rather than
+  not.
 
 ### Security
 
 - The endpoint source decides how far to trust a request's own origin from
   where it runs, and fails closed: on Vercel or Netlify the platform vouches
-  for the Host header and public origins are read with no configuration; in
-  development loopback is allowed too; in production anywhere else a
-  request-derived origin reads nothing (with one `console.warn`) until
-  `origin` pins the address the app listens on, or `trustedOrigins` names the
-  real hostnames a platform deployment answers on. Destinations only a
-  server could reach (private ranges, link-local, carrier-grade NAT,
-  `0.0.0.0`, credentials, non-http) are refused under every policy.
+  for the Host header and public origins are read with no configuration; when
+  `NODE_ENV` says `development` or `test`, loopback is allowed too; everywhere
+  else, an unset `NODE_ENV` included, a request-derived origin reads nothing
+  (with one `console.warn`) until `origin` pins the address the app listens
+  on, or `trustedOrigins` names the real hostnames a platform deployment
+  answers on. Behind that, a literal address only a server could reach
+  (private ranges, link-local, carrier-grade NAT, `0.0.0.0`, the IPv6
+  unspecified and NAT64 forms, credentials, non-http) is refused under every
+  policy. An `origin` or `trustedOrigins` entry that is not an absolute
+  origin throws at construction.
+- A duration that is not one (`NaN`, `Infinity`, negative) falls back to its
+  default rather than silently disabling the cache, the outage bound or every
+  fetch, and the outage bound is never shorter than the TTL.
 - Rules are cached per origin, so a forged Host can poison only its own cache,
   and reads in flight are capped across origins so a burst of forged Hosts
   cannot fan out into a burst of server-side requests.
@@ -67,15 +79,6 @@ First release. Not yet published.
   that. A shipped `bootstrap` is bound the same way, from the moment the
   source was built. `onError` on both sources reports every failed read to the
   customer's own monitoring, and a throw inside it is swallowed.
-- `onMatch`, called when a campaign page is about to be served, so your own
-  analytics can attribute a conversion to the campaign. Never awaited, never
-  able to throw — including an `async` callback, whose rejection is observed for
-  you.
-- `bootstrap`, so the first request of a cold isolate is personalized rather than
-  not.
-
-### Security
-
 - A rule's target must be a rooted path on your own site. An absolute URL, a
   protocol-relative `//host`, a backslash, a control character, `?` or `#` is
   refused. These strings come out of a CMS people edit, and both adapters hand
