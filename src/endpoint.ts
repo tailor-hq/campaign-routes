@@ -41,6 +41,7 @@ import {
   type CachedLoader
 } from './internal/cached-loader.js';
 import { normalizeRoutes } from './internal/freeze-routes.js';
+import { VERSION } from './version.js';
 import type { CampaignRoute } from './core/index.js';
 
 /** The path Tailor's guide tells customers to serve the rules on. */
@@ -56,6 +57,14 @@ export interface CampaignRoutesPayload {
    * rewrite. A page query that failed into `[]` must fail closed, not open.
    */
   paths?: string[];
+  /**
+   * The version of this package the route handler was built with. Stamped by
+   * `campaignRoutesPayload`, read by nobody in the request path: it is there
+   * so whoever reads the endpoint — a person, or Tailor checking a site — can
+   * see which version is deployed, since the code itself only updates when
+   * the site does.
+   */
+  version?: string;
 }
 
 /**
@@ -70,7 +79,9 @@ export const campaignRoutesPayload = (
   routes: CampaignRoute[],
   paths?: string[]
 ): CampaignRoutesPayload =>
-  paths === undefined ? { routes: routes ?? [] } : { routes: routes ?? [], paths };
+  paths === undefined
+    ? { routes: routes ?? [], version: VERSION }
+    : { routes: routes ?? [], paths, version: VERSION };
 
 export interface EndpointRouteSourceConfig {
   /**
@@ -421,11 +432,11 @@ const isPayload = (value: unknown): value is CampaignRoutesPayload =>
  */
 const normalizedPaths = new WeakMap<CampaignRoutesPayload, Set<string>>();
 
-const frozenPayload = (routes: unknown, paths: unknown): CampaignRoutesPayload => {
-  const payload = campaignRoutesPayload(
-    normalizeRoutes(routes),
-    Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string') : undefined
-  );
+const frozenPayload = (routes: unknown, paths: unknown, version?: unknown): CampaignRoutesPayload => {
+  const payload: CampaignRoutesPayload = { routes: normalizeRoutes(routes) };
+  if (Array.isArray(paths)) payload.paths = paths.filter((path): path is string => typeof path === 'string');
+  // The writer's version, carried as read; this side never stamps its own.
+  if (typeof version === 'string') payload.version = version;
   if (payload.paths) {
     Object.freeze(payload.paths);
     normalizedPaths.set(payload, new Set(payload.paths.map(normalize)));
@@ -562,7 +573,9 @@ export const createEndpointRouteSource = (
       // The shipped rules are for this deploy, whichever hostname it answers on.
       // Copied and frozen, so the caller's own object neither leaks into the
       // cache nor is frozen under them.
-      bootstrap: config.bootstrap ? frozenPayload(config.bootstrap.routes, config.bootstrap.paths) : undefined,
+      bootstrap: config.bootstrap
+        ? frozenPayload(config.bootstrap.routes, config.bootstrap.paths, config.bootstrap.version)
+        : undefined,
       load: async (signal) => {
         // Declining is not failing: the origin is not put into backoff and
         // the customer's monitoring is not told about a healthy upstream.
@@ -597,7 +610,7 @@ export const createEndpointRouteSource = (
           if (body.paths !== undefined && body.paths !== null && !Array.isArray(body.paths)) {
             throw new Error('campaign routes endpoint returned paths that is not a list');
           }
-          return frozenPayload(body.routes, body.paths ?? undefined);
+          return frozenPayload(body.routes, body.paths ?? undefined, body.version);
         } finally {
           activeLoads -= 1;
         }

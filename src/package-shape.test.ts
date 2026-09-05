@@ -33,6 +33,13 @@ const CLOUDFRONT_CODE_LIMIT_BYTES = 10 * 1024;
 describe('what ships to npm', () => {
   const pkg = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8'));
 
+  it('stamps the version it was built as, so an endpoint can say which package is deployed', async () => {
+    // A JSON import would land in the edge bundle and the runtime cannot read
+    // package.json, so the version is a constant; this is what keeps it honest.
+    const { VERSION } = await import('./version.js');
+    expect(VERSION).toBe(pkg.version);
+  });
+
   it('ships the README and the LICENSE, not just dist', () => {
     expect(pkg.files).toEqual(expect.arrayContaining(['dist', 'README.md', 'LICENSE']));
     expect(existsSync(join(PACKAGE_ROOT, 'README.md'))).toBe(true);

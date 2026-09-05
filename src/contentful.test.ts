@@ -80,6 +80,16 @@ describe('toCampaignRoutes', () => {
     expect(toCampaignRoutes([{}, entry(ROUTE_FIELDS)], 'en-US')).toEqual([ROUTE_FIELDS]);
   });
 
+  it('keeps an operator matcher, and drops one the core does not act on', () => {
+    const items = [
+      entry({ basePath: '/a', targetPath: '/b', matchParams: { utm_term: { contains: 'langsmith' }, utm_source: 'goo*' } }),
+      entry({ basePath: '/a', targetPath: '/c', matchParams: { utm_term: { regex: '.*' } } })
+    ];
+    expect(toCampaignRoutes(items, 'en-US')).toEqual([
+      { basePath: '/a', targetPath: '/b', matchParams: { utm_term: { contains: 'langsmith' }, utm_source: 'goo*' } }
+    ]);
+  });
+
   it('rejects an array matchParams, which JSON allows and the core cannot use', () => {
     const items = [entry({ basePath: '/a', targetPath: '/b', matchParams: ['utm_term'] })];
     expect(toCampaignRoutes(items, 'en-US')).toEqual([]);

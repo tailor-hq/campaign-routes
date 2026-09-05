@@ -46,19 +46,118 @@
  * short enough for the customer's own engineer to read at 2am.
  */
 
+/**
+ * How a parameter's value must relate to the request's, always ignoring case:
+ *
+ * - a plain string is an exact match (`"enterprise plan"`);
+ * - a string containing `*` is a wildcard, where each `*` stands for any run
+ *   of characters, including none (`"enterprise*"`, `"*langsmith*"`, and a
+ *   lone `"*"` for "present, any value");
+ * - an object names one operator: `{ "contains": "langsmith" }`,
+ *   `{ "startsWith": "enterprise" }`, `{ "endsWith": " pricing" }`, or
+ *   `{ "oneOf": ["a", "b*"] }`, whose entries are each a plain or wildcard
+ *   string.
+ *
+ * Nothing here is a regular expression, and nothing ever will be: these
+ * strings are typed by marketers into a CMS and run on every ad click, and a
+ * pattern language that can be made to backtrack is a way to take a site down
+ * from a content field.
+ */
+export type ParamMatcher =
+  | string
+  | { contains: string }
+  | { startsWith: string }
+  | { endsWith: string }
+  | { oneOf: string[] };
+
 /** One rule, as Tailor writes it into the customer's CMS. */
 export interface CampaignRoute {
-  /** The page the ad points at, e.g. `/product/analytics`. */
+  /**
+   * The page the ad points at, e.g. `/product/analytics`. A trailing `/*`
+   * covers a section: `/blog/*` is `/blog` and every page under it, and `/*`
+   * is every page on the site.
+   */
   basePath: string;
   /**
-   * The campaign parameters that must be present for this rule to apply.
+   * The campaign parameters that must be present for this rule to apply, and
+   * how each value is matched — see `ParamMatcher`.
    *
    * A SUBSET check, never an equality one — see `matchesParams`.
    */
-  matchParams: Record<string, string>;
+  matchParams: Record<string, ParamMatcher>;
   /** The page to serve instead, e.g. `/product/analytics-enterprise-plan`. */
   targetPath: string;
 }
+
+/**
+ * Whether a value is a `ParamMatcher` this core will act on. Exported so the
+ * sources can refuse a rule the same way the matcher would, before it is cached.
+ */
+export const isParamMatcher = (value: unknown): value is ParamMatcher => {
+  if (typeof value === 'string') return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  const key = keys[0];
+  const operand = (value as Record<string, unknown>)[key];
+  if (key === 'contains' || key === 'startsWith' || key === 'endsWith') {
+    return typeof operand === 'string' && operand.length > 0;
+  }
+  if (key === 'oneOf') {
+    if (!Array.isArray(operand) || operand.length === 0) return false;
+    for (let index = 0; index < operand.length; index += 1) {
+      if (typeof operand[index] !== 'string') return false;
+    }
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Whether `value` matches a wildcard pattern, where each `*` stands for any
+ * run of characters including none. Both already lowercased. Segment by
+ * segment with `indexOf`, so a pattern can never be made to backtrack.
+ */
+const matchesWildcard = (pattern: string, value: string): boolean => {
+  const segments = pattern.split('*');
+  if (segments.length === 1) return pattern === value;
+
+  const first = segments[0];
+  if (value.substring(0, first.length) !== first) return false;
+  let cursor = first.length;
+
+  for (let index = 1; index < segments.length - 1; index += 1) {
+    const segment = segments[index];
+    if (segment.length === 0) continue;
+    const found = value.indexOf(segment, cursor);
+    if (found === -1) return false;
+    cursor = found + segment.length;
+  }
+
+  const last = segments[segments.length - 1];
+  if (last.length === 0) return true;
+  const tail = value.length - last.length;
+  return tail >= cursor && value.substring(tail) === last;
+};
+
+/** Whether one request value satisfies one matcher; both compared lowercased. */
+const matchesValue = (matcher: ParamMatcher, actual: string): boolean => {
+  const value = actual.toLowerCase();
+  if (typeof matcher === 'string') {
+    const pattern = matcher.toLowerCase();
+    return pattern.indexOf('*') === -1 ? pattern === value : matchesWildcard(pattern, value);
+  }
+  if ('contains' in matcher) return value.indexOf(matcher.contains.toLowerCase()) !== -1;
+  if ('startsWith' in matcher) return value.indexOf(matcher.startsWith.toLowerCase()) === 0;
+  if ('endsWith' in matcher) {
+    const suffix = matcher.endsWith.toLowerCase();
+    return value.length >= suffix.length && value.substring(value.length - suffix.length) === suffix;
+  }
+  for (let index = 0; index < matcher.oneOf.length; index += 1) {
+    if (matchesValue(matcher.oneOf[index], actual)) return true;
+  }
+  return false;
+};
 
 /** The incoming request, reduced to the two things that decide the answer. */
 export interface CampaignRequest {
@@ -156,7 +255,7 @@ const pathToServe = (value: string): string => {
  * `UTM_Term` match a rule about something else.
  */
 const matchesParams = (
-  matchParams: Record<string, string>,
+  matchParams: Record<string, ParamMatcher>,
   searchParams: Record<string, string>
 ): boolean => {
   const keys = Object.keys(matchParams);
@@ -170,10 +269,23 @@ const matchesParams = (
     if (!Object.prototype.hasOwnProperty.call(searchParams, key)) return false;
 
     const actual = searchParams[key];
-    if (typeof required !== 'string' || typeof actual !== 'string') return false;
-    if (required.toLowerCase() !== actual.toLowerCase()) return false;
+    if (!isParamMatcher(required) || typeof actual !== 'string') return false;
+    if (!matchesValue(required, actual)) return false;
   }
   return true;
+};
+
+/**
+ * Whether the request path is one this rule's `basePath` names: the page
+ * itself, or with a trailing `/*`, the page and everything under it. Both
+ * already normalised.
+ */
+const matchesBasePath = (basePath: string, path: string): boolean => {
+  if (basePath.length >= 2 && basePath.substring(basePath.length - 2) === '/*') {
+    const prefix = basePath.substring(0, basePath.length - 2);
+    return path === prefix || path.indexOf(prefix + '/') === 0;
+  }
+  return basePath === path;
 };
 
 /**
@@ -237,17 +349,45 @@ const isUsable = (route: CampaignRoute): boolean => {
   const targetPath = normalizePath(route.targetPath);
   if (!isInternalPath(basePath)) return false;
   if (!isInternalPath(targetPath)) return false;
+  // A wildcard names pages to match, never a page to serve.
+  if (targetPath.indexOf('*') !== -1) return false;
+
+  // Every matcher must be one the core acts on; a shape it does not know is a
+  // content mistake, not something to guess at.
+  const keys = Object.keys(route.matchParams);
+  for (let index = 0; index < keys.length; index += 1) {
+    if (!isParamMatcher(route.matchParams[keys[index]])) return false;
+  }
 
   // A rule pointing at the page it came from would rewrite a request to itself.
   return basePath !== targetPath;
 };
 
 /**
+ * How narrowly a rule describes traffic, as numbers to compare in order:
+ * an exact page beats a section wildcard; among wildcards the longer prefix
+ * wins; then more parameters; then more exact (non-pattern) parameters.
+ */
+const specificity = (route: CampaignRoute): number[] => {
+  const basePath = normalizePath(route.basePath);
+  const sectional = basePath.length >= 2 && basePath.substring(basePath.length - 2) === '/*';
+  const keys = Object.keys(route.matchParams);
+  let exact = 0;
+  for (let index = 0; index < keys.length; index += 1) {
+    const matcher = route.matchParams[keys[index]];
+    if (typeof matcher === 'string' && matcher.indexOf('*') === -1) exact += 1;
+  }
+  return [sectional ? 0 : 1, sectional ? basePath.length : 0, keys.length, exact];
+};
+
+/**
  * Which of two matching rules wins.
  *
- * **More parameters wins**, because a rule naming `utm_term` AND `utm_source` is
- * describing a narrower slice of traffic than one naming `utm_term` alone, and
- * the narrower description is the one the marketer meant for that visitor.
+ * **The narrower description wins**, because a rule naming `utm_term` AND
+ * `utm_source` is describing a smaller slice of traffic than one naming
+ * `utm_term` alone, a rule for `/pricing` is narrower than one for `/*`, and an
+ * exact value is narrower than a pattern; the narrower description is the one
+ * the marketer meant for that visitor. See `specificity` for the order.
  *
  * On a genuine tie, the target path — chosen for being total and stable rather
  * than for meaning anything. Two equally specific rules is a mistake in the
@@ -256,9 +396,11 @@ const isUsable = (route: CampaignRoute): boolean => {
  * Deterministic-and-arguably-wrong is debuggable; non-deterministic is not.
  */
 const isBetterThan = (candidate: CampaignRoute, incumbent: CampaignRoute): boolean => {
-  const candidateCount = Object.keys(candidate.matchParams).length;
-  const incumbentCount = Object.keys(incumbent.matchParams).length;
-  if (candidateCount !== incumbentCount) return candidateCount > incumbentCount;
+  const mine = specificity(candidate);
+  const theirs = specificity(incumbent);
+  for (let index = 0; index < mine.length; index += 1) {
+    if (mine[index] !== theirs[index]) return mine[index] > theirs[index];
+  }
   return candidate.targetPath < incumbent.targetPath;
 };
 
@@ -296,7 +438,10 @@ export const matchCampaignRoute = (
   for (let index = 0; index < routes.length; index += 1) {
     const route = routes[index];
     if (!isUsable(route)) continue;
-    if (normalizePath(route.basePath) !== path) continue;
+    if (!matchesBasePath(normalizePath(route.basePath), path)) continue;
+    // Under a section wildcard the target can be one of the pages it covers;
+    // a request for that page must not be rewritten to itself.
+    if (normalizePath(route.targetPath) === path) continue;
     if (!matchesParams(route.matchParams, searchParams)) continue;
     // Checked per candidate rather than once at the end, so a rule whose page is
     // not published yet loses to a less specific rule whose page is — instead of

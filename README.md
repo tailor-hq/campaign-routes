@@ -196,13 +196,38 @@ compared ignoring trailing slashes and case; the page that gets served is
 `targetPath` with its case preserved (surrounding whitespace and a trailing
 slash are trimmed).
 
+### How a value is matched
+
+A parameter value is compared ignoring case, and it can be more than an exact
+string:
+
+| `matchParams` value | Matches when the request's value… |
+| --- | --- |
+| `"enterprise plan"` | is exactly that |
+| `"enterprise*"` | starts with `enterprise`; each `*` stands for any run of characters, including none, so `"*langsmith*"` is "contains" and a lone `"*"` is "present, whatever the value" |
+| `{ "contains": "langsmith" }` | contains it |
+| `{ "startsWith": "enterprise" }` | starts with it |
+| `{ "endsWith": " pricing" }` | ends with it |
+| `{ "oneOf": ["enterprise plan", "enterprise*"] }` | matches any one entry, each a plain or wildcard string |
+
+`basePath` takes one form of wildcard: a trailing `/*` covers a section, so
+`/blog/*` is `/blog` and every page under it, and `/*` is the whole site. A
+`targetPath` is always one page and may not contain `*`.
+
+None of this is a regular expression, and none of it will be. These strings are
+typed by marketers and run on every ad click, and a pattern that can be made to
+backtrack is a way to take a site down from a content field. Every form above
+is a handful of `indexOf` calls.
+
 **A rule matches when the request carries everything it names, and may carry
 more.** A real ad click never arrives with only the parameters somebody targeted
 on — Google appends `gclid`, Meta appends `fbclid`, your analytics adds its own —
 so a rule demanding an exact parameter set would match in testing and never once
 in production. Values compare case-insensitively; keys do not.
 
-When two rules match, the one naming more parameters wins. On a genuine tie the
+When two rules match, the narrower one wins: an exact `basePath` beats a
+section wildcard, a longer section prefix beats a shorter one, more parameters
+beat fewer, and among those an exact value beats a pattern. On a genuine tie the
 target path decides, which is arbitrary and deliberately deterministic: two
 equally specific rules is a mistake in your content, and the failure it must not
 produce is a page that alternates between versions depending on which entry came

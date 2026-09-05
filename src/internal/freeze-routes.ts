@@ -1,4 +1,4 @@
-import type { CampaignRoute } from '../core/index.js';
+import { isParamMatcher, type CampaignRoute, type ParamMatcher } from '../core/index.js';
 
 /**
  * Freeze rules to the leaf. Every request on an isolate gets the same rule
@@ -11,6 +11,13 @@ import type { CampaignRoute } from '../core/index.js';
  */
 export const freezeRoutes = (routes: CampaignRoute[]): CampaignRoute[] => {
   for (const route of routes) {
+    for (const key of Object.keys(route.matchParams)) {
+      const matcher = route.matchParams[key];
+      if (typeof matcher === 'object' && matcher !== null) {
+        if ('oneOf' in matcher) Object.freeze(matcher.oneOf);
+        Object.freeze(matcher);
+      }
+    }
     Object.freeze(route.matchParams);
     Object.freeze(route);
   }
@@ -20,18 +27,28 @@ export const freezeRoutes = (routes: CampaignRoute[]): CampaignRoute[] => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/** A fresh copy of a matcher, so the caller's own object is never the cached one. */
+const copyMatcher = (matcher: ParamMatcher): ParamMatcher => {
+  if (typeof matcher === 'string') return matcher;
+  if ('contains' in matcher) return { contains: matcher.contains };
+  if ('startsWith' in matcher) return { startsWith: matcher.startsWith };
+  if ('endsWith' in matcher) return { endsWith: matcher.endsWith };
+  return { oneOf: matcher.oneOf.slice() };
+};
+
 /**
  * Read rules out of input this package did not build — an endpoint's JSON, a
- * caller's bootstrap — keeping the well-formed ones as fresh, leaf-frozen
- * copies and skipping the rest one at a time.
+ * caller's bootstrap, a CMS entry — keeping the well-formed ones as fresh,
+ * leaf-frozen copies and skipping the rest one at a time.
  *
- * One malformed rule must not take the payload down with it. The matcher and
- * the Contentful source both skip a bad rule and route on the others, and an
- * endpoint read that threw on one would be a failed refresh: on a cold cache
- * that is every campaign off, on a warm one it is stale rules kept. Copying is
- * what makes the freeze safe — the caller's own objects are left exactly as
- * they were. A rule whose parameters filter down to nothing is dropped, since
- * a rule that names no parameter would match every visitor.
+ * One malformed rule must not take the payload down with it. The matcher
+ * skips a bad rule and routes on the others, and an endpoint read that threw
+ * on one would be a failed refresh: on a cold cache that is every campaign
+ * off, on a warm one it is stale rules kept. Copying is what makes the freeze
+ * safe — the caller's own objects are left exactly as they were. A parameter
+ * whose matcher is not one the core acts on is dropped, and a rule whose
+ * parameters then filter down to nothing is dropped too, since a rule that
+ * names no parameter would match every visitor.
  */
 export const normalizeRoutes = (value: unknown): CampaignRoute[] => {
   if (!Array.isArray(value)) return [];
@@ -42,10 +59,10 @@ export const normalizeRoutes = (value: unknown): CampaignRoute[] => {
     if (typeof basePath !== 'string' || typeof targetPath !== 'string' || !isRecord(matchParams)) {
       continue;
     }
-    const params: Record<string, string> = {};
+    const params: Record<string, ParamMatcher> = {};
     for (const key of Object.keys(matchParams)) {
-      const param = matchParams[key];
-      if (typeof param === 'string') params[key] = param;
+      const matcher = matchParams[key];
+      if (isParamMatcher(matcher)) params[key] = copyMatcher(matcher);
     }
     if (Object.keys(params).length === 0) continue;
     routes.push({ basePath, targetPath, matchParams: params });

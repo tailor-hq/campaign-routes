@@ -28,6 +28,15 @@ First release. Not yet published.
   an entry point: it has never run in that runtime, and a published export is a
   promise a README cannot walk back. It becomes an entry point once a real
   deploy has proved it.
+- Matchers beyond exact: a `*` wildcard in a parameter value (`"enterprise*"`,
+  `"*langsmith*"`, a lone `"*"` for "present"), and operator objects
+  `{ contains }`, `{ startsWith }`, `{ endsWith }` and `{ oneOf: [...] }`; a
+  trailing `/*` on `basePath` covers a section (`/blog/*`) or the site (`/*`).
+  None of it is a regular expression, by design. The narrower rule wins: exact
+  page over section, longer section over shorter, more parameters, then exact
+  values over patterns.
+- The route handler's payload carries `version`, the package version it was
+  built with, so whoever reads the endpoint can see what a site runs.
 - `waitUntil` and `awaitStaleRefresh` on both sources: the first hands the
   refresh behind a stale read to a runtime that would otherwise cancel it
   (Cloudflare Workers, Vercel's edge runtime); the second makes a stale read

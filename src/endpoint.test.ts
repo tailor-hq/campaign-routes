@@ -19,13 +19,14 @@ describe('campaignRoutesPayload', () => {
   it('builds the shape both halves of the install agree on', () => {
     expect(campaignRoutesPayload([ROUTE], ['/pricing'])).toEqual({
       routes: [ROUTE],
-      paths: ['/pricing']
+      paths: ['/pricing'],
+      version: expect.any(String)
     });
   });
 
   it('survives a caller with nothing to report, and leaves paths out rather than inventing an empty one', () => {
-    expect(campaignRoutesPayload(undefined as never, undefined)).toEqual({ routes: [] });
-    expect(campaignRoutesPayload([], [])).toEqual({ routes: [], paths: [] });
+    expect(campaignRoutesPayload(undefined as never, undefined)).toEqual({ routes: [], version: expect.any(String) });
+    expect(campaignRoutesPayload([], [])).toEqual({ routes: [], paths: [], version: expect.any(String) });
   });
 });
 
@@ -288,14 +289,31 @@ describe('createEndpointRouteSource', () => {
         { basePath: '/a', targetPath: '/b', matchParams: ['utm'] },
         { basePath: '/a', targetPath: '/b', matchParams: {} },
         { basePath: '/a', targetPath: '/b', matchParams: { utm_campaign: 7 } },
+        { basePath: '/a', targetPath: '/b', matchParams: { utm_campaign: { regex: '.*' } } },
         { ...ROUTE, matchParams: { ...ROUTE.matchParams, page: 2 } },
+        { basePath: '/a', targetPath: '/b', matchParams: { utm_term: { oneOf: ['x', 'y*'] }, utm_source: '*' } },
         ROUTE
       ],
-      paths: ['/pricing', 42, null]
+      paths: ['/pricing', 42, null],
+      version: '9.9.9'
     });
     const source = createEndpointRouteSource({ fetchImpl });
-    expect(await source.getRoutes('https://site.test')).toEqual([ROUTE, ROUTE]);
+    const routes = await source.getRoutes('https://site.test');
+    expect(routes).toEqual([
+      ROUTE,
+      { basePath: '/a', targetPath: '/b', matchParams: { utm_term: { oneOf: ['x', 'y*'] }, utm_source: '*' } },
+      ROUTE
+    ]);
+    // Operator objects are frozen to the leaf too.
+    expect(Object.isFrozen(routes[1]!.matchParams.utm_term)).toBe(true);
+    expect(Object.isFrozen((routes[1]!.matchParams.utm_term as { oneOf: string[] }).oneOf)).toBe(true);
     expect(source.pageExists('/pricing')).toBe(true);
+  });
+
+  it('stamps the route handler payload with the package version, and carries the one it reads', async () => {
+    const { VERSION } = await import('./version.js');
+    expect(campaignRoutesPayload([ROUTE]).version).toBe(VERSION);
+    expect(campaignRoutesPayload([ROUTE], ['/a']).version).toBe(VERSION);
   });
 
   it('copies and freezes a bootstrap, so the caller cannot change routing after the fact', async () => {

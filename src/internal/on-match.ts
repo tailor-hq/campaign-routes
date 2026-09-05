@@ -24,7 +24,7 @@
  * to the one place the customer can inject arbitrary code into it.
  */
 
-import type { CampaignRoute } from '../core/index.js';
+import type { CampaignRoute, ParamMatcher } from '../core/index.js';
 
 /** What served, and why. Enough to attribute a conversion without guessing. */
 export interface CampaignMatchEvent {
@@ -32,8 +32,12 @@ export interface CampaignMatchEvent {
   requestedPath: string;
   /** The path actually rendered. */
   targetPath: string;
-  /** The campaign parameters the winning rule matched on. */
-  matchParams: Record<string, string>;
+  /**
+   * The campaign parameters the winning rule matched on, as the rule names
+   * them: an exact value, a wildcard, or an operator object. The visitor's
+   * actual values are on the request you already have.
+   */
+  matchParams: Record<string, ParamMatcher>;
   /** The whole rule, for a caller that wants more than the summary. */
   route: CampaignRoute;
 }

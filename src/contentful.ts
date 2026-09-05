@@ -189,18 +189,11 @@ export const toCampaignRoutes = (items: ContentfulEntry[], locale: string): Camp
     const basePath = readField(item?.fields, 'basePath', locale);
     const targetPath = readField(item?.fields, 'targetPath', locale);
     const matchParams = readField(item?.fields, 'matchParams', locale);
-    if (typeof basePath !== 'string' || typeof targetPath !== 'string') continue;
-    if (!matchParams || typeof matchParams !== 'object' || Array.isArray(matchParams)) continue;
-
-    // Values are compared as strings by the core; anything else is a content
-    // mistake rather than something to coerce and guess at.
-    const params: Record<string, string> = {};
-    for (const [key, value] of Object.entries(matchParams as Record<string, unknown>)) {
-      if (typeof value === 'string') params[key] = value;
-    }
-    if (Object.keys(params).length === 0) continue;
-
-    routes.push({ basePath, targetPath, matchParams: params });
+    // One validation for every source: a matcher the core does not act on is a
+    // content mistake rather than something to coerce, and a rule left with no
+    // parameters is dropped rather than matching everyone.
+    const normalized = normalizeRoutes([{ basePath, targetPath, matchParams }]);
+    if (normalized.length === 1) routes.push(normalized[0]!);
   }
   return routes;
 };

@@ -9,9 +9,11 @@
  * runtimes, and holding them to the same rule would be a cost paid for nothing.
  */
 export {
+  isParamMatcher,
   matchCampaignRoute,
   type CampaignMatch,
   type CampaignRequest,
   type CampaignRoute,
-  type MatchOptions
+  type MatchOptions,
+  type ParamMatcher
 } from './match.js';
