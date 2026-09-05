@@ -42,10 +42,21 @@ origin**, so rules fetched for a bogus `Host` are only ever served to requests
 carrying that same bogus `Host` — a spoofed request can poison the attacker's
 own cache and nobody else's, and two real hostnames on one deployment never
 share rules or page lists either. And `isInternalPath` confines every target to
-your own site's paths regardless. What remains is that the middleware makes an
-uncredentialed `GET` to whatever host the header named. **To remove even that,
-pass `origin`**; once set it is never overridden by a request, and the request
-origin is not consulted at all.
+your own site's paths regardless.
+
+What a forged `Host` could still do is make the middleware issue one `GET`, to
+a fixed path, from inside your network, without seeing the response. So the
+default **refuses the destinations only a server could reach**: private ranges,
+link-local (which is where every cloud metadata service lives), carrier-grade
+NAT, `0.0.0.0`, anything carrying credentials, and anything not `http(s)`. A
+request naming one of those reads no rules at all. **Loopback is deliberately
+allowed**, because `next dev` runs there and refusing it would break every
+developer's first run; a self-hosted production deployment should close it
+with one of the two settings below.
+
+**Pass `trustedOrigins`** to read only from hostnames you name, or **pass
+`origin`** to ignore the request entirely; once set, neither is ever overridden
+by a request.
 
 **The rules endpoint is public by design.** Middleware reads it without
 credentials, so anyone can too. It carries every campaign rule — which

@@ -1,4 +1,8 @@
-import { campaignRoutesPayload, createEndpointRouteSource } from './endpoint.js';
+import {
+  campaignRoutesPayload,
+  createEndpointRouteSource,
+  isRefusedRequestOrigin
+} from './endpoint.js';
 
 const ROUTE = {
   basePath: '/pricing',
@@ -251,5 +255,77 @@ describe('createEndpointRouteSource', () => {
     const before = (fetchImpl as unknown as jest.Mock).mock.calls.length;
     await source.getRoutes('https://host-0.example');
     expect((fetchImpl as unknown as jest.Mock).mock.calls.length).toBe(before + 1);
+  });
+
+  describe('a request origin only a server could reach', () => {
+    // A forged Host header can name anything, and the fetch this source makes
+    // from it runs inside the customer's network. The path is fixed and the
+    // body never goes back to the requester, so the primitive is blind — but a
+    // blind GET to a cloud metadata service or a private address is still a
+    // request the customer never meant to make. Each of these must produce no
+    // fetch at all, and no other origin's rules in its place.
+    const refused = [
+      'http://169.254.169.254',
+      'http://[fe80::1]',
+      'http://10.0.0.5',
+      'http://172.16.0.1',
+      'http://192.168.1.1',
+      'http://100.100.100.200',
+      'http://0.0.0.0',
+      'http://[::ffff:10.0.0.5]',
+      'http://[fd00::1]',
+      'http://user:secret@www.example.com',
+      'ftp://www.example.com'
+    ];
+
+    for (const origin of refused) {
+      it(`refuses ${origin}`, async () => {
+        const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+        const source = createEndpointRouteSource({ fetchImpl });
+        await source.getRoutes('https://www.example.com');
+        expect(await source.getRoutes(origin)).toEqual([]);
+        expect((fetchImpl as unknown as jest.Mock).mock.calls.map((call) => call[0])).toEqual([
+          'https://www.example.com/api/campaign-routes'
+        ]);
+        expect(isRefusedRequestOrigin(origin)).toBe(true);
+      });
+    }
+
+    it('still reads from localhost, because that is where next dev runs', async () => {
+      // Refusing loopback breaks every developer's first run of the package,
+      // and a request to a server's own loopback reaches only what that server
+      // already exposes to itself. A production self-host closes it with
+      // `origin` or `trustedOrigins`.
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ fetchImpl });
+      expect(await source.getRoutes('http://localhost:3000')).toEqual([ROUTE]);
+      expect(isRefusedRequestOrigin('http://localhost:3000')).toBe(false);
+    });
+
+    it('never applies the check to a pinned origin, which is trusted as configured', async () => {
+      const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+      const source = createEndpointRouteSource({ origin: 'http://10.0.0.5:8080', fetchImpl });
+      expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+      expect((fetchImpl as unknown as jest.Mock).mock.calls[0][0]).toBe(
+        'http://10.0.0.5:8080/api/campaign-routes'
+      );
+    });
+  });
+
+  it('reads only from trustedOrigins when they are given', async () => {
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    const source = createEndpointRouteSource({
+      trustedOrigins: ['https://www.example.com', 'https://preview.example.com/'],
+      fetchImpl
+    });
+
+    expect(await source.getRoutes('https://www.example.com')).toEqual([ROUTE]);
+    expect(await source.getRoutes('https://preview.example.com')).toEqual([ROUTE]);
+    // Public, well-formed, and not on the list: refused just the same.
+    expect(await source.getRoutes('https://www.example.com.evil.example')).toEqual([]);
+    expect((fetchImpl as unknown as jest.Mock).mock.calls.map((call) => call[0])).toEqual([
+      'https://www.example.com/api/campaign-routes',
+      'https://preview.example.com/api/campaign-routes'
+    ]);
   });
 });

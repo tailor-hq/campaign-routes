@@ -44,6 +44,26 @@ describe('campaignRouteFor', () => {
     expect(target).toBeNull();
   });
 
+  it('makes no server-side request for a Host header naming an internal address', async () => {
+    // The adapter hands the request's own origin to the source, and that origin
+    // is the Host header. This is the whole chain end to end: a forged Host
+    // naming a cloud metadata address must produce no fetch and no rewrite.
+    const { createEndpointRouteSource } = await import('./endpoint.js');
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ routes: ROUTES, paths: [] })
+    })) as unknown as typeof fetch;
+    const endpointSource = createEndpointRouteSource({ fetchImpl });
+
+    const target = await campaignRouteFor(
+      request('http://169.254.169.254/product/analytics?utm_term=enterprise+plan'),
+      endpointSource
+    );
+    expect(target).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('does not touch the rule source for a request with no query string', async () => {
     // Organic traffic is the majority of a marketing site's requests. Answering
     // it before the fetch is what keeps the common case off the network.

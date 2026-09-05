@@ -69,8 +69,26 @@ export interface EndpointRouteSourceConfig {
    * environment. Pass `origin` to `getRoutes` (the Next adapter does).
    */
   path?: string;
-  /** An absolute origin, when the endpoint is not on the same site. */
+  /**
+   * An absolute origin, when the endpoint is not on the same site — or when
+   * the site's own origin is not to be trusted from the request.
+   *
+   * Once set, the request's origin is never consulted. Trusted as configured,
+   * so it may name an internal address if that is where the endpoint lives.
+   */
   origin?: string;
+  /**
+   * The only request origins this source will read from, when the request is
+   * the source of truth for which hostname it is running on.
+   *
+   * The request origin is the Host header, and behind a forwarding proxy or on
+   * self-hosted Next.js that header is attacker-supplied. Without this list the
+   * default refuses the destinations only a server could reach (see
+   * `isRefusedRequestOrigin`) and accepts anything else; with it, a request
+   * origin not listed here reads no rules at all. Set it on any deployment
+   * where the set of legitimate hostnames is known, which is most of them.
+   */
+  trustedOrigins?: string[];
   /** How long a fetched payload is reused. Default 60s. */
   ttlMs?: number;
   /** How long a single fetch may take before it is abandoned. Default 2500ms. */
@@ -123,6 +141,81 @@ export interface EndpointRouteSource {
  */
 const MAX_ORIGINS = 8;
 
+/** The origin as a URL would spell it, or null when it is not one at all. */
+const canonicalOrigin = (value: string): string | null => {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Whether a request-derived origin names somewhere only the server could reach.
+ *
+ * A forged Host header can name any hostname at all, and the fetch this source
+ * makes from it is a server-side request from inside the customer's network.
+ * The path is fixed and the response is never returned to the requester, so the
+ * primitive is blind — but a blind GET to a cloud metadata service or a
+ * private address is still a request the customer never meant to make. Those
+ * destinations are refused outright for a request-derived origin; a pinned
+ * `origin` is trusted as configured, since a customer may legitimately keep the
+ * endpoint on an internal address.
+ *
+ * Loopback is deliberately NOT on this list. `next dev` serves on
+ * `localhost:3000`, so refusing it breaks every developer's first run of the
+ * package, and a request to a server's own loopback reaches only what that
+ * server already exposes to itself. A self-hosted production deployment should
+ * close even that with `origin` or `trustedOrigins`.
+ */
+export const isRefusedRequestOrigin = (origin: string): boolean => {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return true;
+  if (url.username !== '' || url.password !== '') return true;
+
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  // An IPv4 address carried inside an IPv6 one is the IPv4 address. The URL
+  // parser hands it back in hex form — `[::ffff:10.0.0.5]` becomes
+  // `::ffff:a00:5` — so the two 16-bit groups are turned back into octets
+  // before the IPv4 rules below get to look at them.
+  if (host.startsWith('::ffff:')) {
+    const mapped = host.slice('::ffff:'.length);
+    const groups = mapped.split(':');
+    if (groups.length === 2 && groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) {
+      const high = parseInt(groups[0]!, 16);
+      const low = parseInt(groups[1]!, 16);
+      host = [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+    } else {
+      host = mapped;
+    }
+  }
+
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    if (a === 0) return true; // 0.0.0.0/8, "this host"
+    if (a === 10) return true; // RFC 1918
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC 1918
+    if (a === 192 && b === 168) return true; // RFC 1918
+    if (a === 169 && b === 254) return true; // link-local, and every cloud metadata service
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT, and some metadata services
+    return false;
+  }
+  if (host.includes(':')) {
+    // IPv6: link-local and unique-local.
+    if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb')) return true;
+    if (host.startsWith('fc') || host.startsWith('fd')) return true;
+  }
+  return false;
+};
+
 const isPayload = (value: unknown): value is CampaignRoutesPayload =>
   !!value && typeof value === 'object' && Array.isArray((value as CampaignRoutesPayload).routes);
 
@@ -163,6 +256,11 @@ export const createEndpointRouteSource = (
   // ignored entirely, which is what makes the option a mitigation rather than
   // decoration.
   const pinnedOrigin = config.origin;
+  // Normalised once, so `https://Example.com` and `https://example.com/` match
+  // the origin a URL actually reports.
+  const trustedOrigins = config.trustedOrigins
+    ? new Set(config.trustedOrigins.map(canonicalOrigin).filter((value): value is string => value !== null))
+    : null;
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -207,24 +305,37 @@ export const createEndpointRouteSource = (
     return loader;
   };
 
-  const resolveOrigin = (origin?: string): string => {
+  /**
+   * Which origin to read for, or null for a request origin this source will
+   * not fetch from. A pinned origin wins outright and is never checked; a
+   * request-derived one is checked against the allowlist when there is one,
+   * and against the refused destinations otherwise.
+   */
+  const resolveOrigin = (origin?: string): string | null => {
     if (pinnedOrigin) return pinnedOrigin;
-    if (typeof origin === 'string' && origin.length > 0) return origin;
-    return lastOrigin;
+    if (typeof origin === 'string' && origin.length > 0) {
+      if (trustedOrigins) return trustedOrigins.has(canonicalOrigin(origin) ?? '') ? origin : null;
+      return isRefusedRequestOrigin(origin) ? null : origin;
+    }
+    return lastOrigin.length > 0 ? lastOrigin : null;
   };
 
   return {
     getRoutes: async (origin?: string) => {
       const resolved = resolveOrigin(origin);
+      // A refused origin reads nothing: no fetch is made, and no other origin's
+      // rules are handed back in its place.
+      if (resolved === null) return [];
       lastOrigin = resolved;
       const payload = await loaderFor(resolved).read();
       return payload ? payload.routes : [];
     },
     pageExists: (candidate: string, origin?: string) => {
+      const resolved = resolveOrigin(origin);
       // `get`, not `loaderFor`: an origin nothing has read yet has no evidence
       // to offer, and creating a loader to say so would let this synchronous
       // path grow the map.
-      const payload = loaders.get(resolveOrigin(origin))?.peek() ?? null;
+      const payload = resolved === null ? null : (loaders.get(resolved)?.peek() ?? null);
       // Nothing loaded yet, or an endpoint that returned no path list at all:
       // no evidence either way, so do not refuse on it.
       if (!payload || payload.paths.length === 0) return true;
