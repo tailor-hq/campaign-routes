@@ -18,7 +18,11 @@
     // accident rather than by design.
     "lib": ["ES2018", "DOM"],
     "module": "esnext",
-    "moduleResolution": "node",
+    // `bundler`, not `node`: the `node` (node10) resolution is removed in
+    // TypeScript 7, and a clean clone of the public repo found that out the day
+    // a newer compiler was pulled in. The source already writes `.js` import
+    // specifiers, which is what both Node and every bundler resolve.
+    "moduleResolution": "bundler",
     // Declarations only; `tsconfig.build.json` emits the JavaScript. The split
     // exists so the two can disagree about comments — see that file for why.
     "emitDeclarationOnly": true,

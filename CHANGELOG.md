@@ -46,6 +46,11 @@ First release. Not yet published.
 - Cached rules are frozen to the leaf in both sources, so an `onMatch` or
   `pageExists` that edits a rule in place cannot change routing for every later
   visitor on that isolate.
+- An empty `paths` list in the endpoint payload now fails closed: it is the
+  route handler's statement that the site serves no pages, and every rewrite
+  is refused. "Unknown" is spelled by leaving `paths` out. Reading `[]` as
+  unknown switched the 404 guard off exactly when a page query had failed into
+  an empty array.
 - A failing upstream is left alone for a short, doubling wait (1s to 30s)
   while the last good rules keep serving, so a fast 429 or 500 cannot turn
   every page request into an upstream request.

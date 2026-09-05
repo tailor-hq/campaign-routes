@@ -22,7 +22,7 @@ export default {
           // runner match production would only make the tests harder to write.
           target: 'ES2020',
           module: 'esnext',
-          moduleResolution: 'node',
+          moduleResolution: 'bundler',
           verbatimModuleSyntax: false
         }
       }

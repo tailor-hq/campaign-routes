@@ -44,7 +44,14 @@ const DEFAULT_TIMEOUT_MS = 2_500;
 
 export interface CampaignRoutesPayload {
   routes: CampaignRoute[];
-  paths: string[];
+  /**
+   * The paths the site serves, so a rule whose page is not published yet is
+   * skipped rather than rewritten to a 404. Two different things can be said
+   * here: **leave it out** to say the inventory is unknown, which protects
+   * nothing; **an empty list** says the site serves no pages, and refuses every
+   * rewrite. A page query that failed into `[]` must fail closed, not open.
+   */
+  paths?: string[];
 }
 
 /**
@@ -52,12 +59,14 @@ export interface CampaignRoutesPayload {
  *
  * Trivial on purpose. It exists so the shape is written down in one place that
  * both halves import, rather than as a field name in a route handler and a
- * matching field name in a middleware that nothing checks against it.
+ * matching field name in a middleware that nothing checks against it. `paths`
+ * is carried only when given, so "unknown" and "none" stay different answers.
  */
 export const campaignRoutesPayload = (
   routes: CampaignRoute[],
-  paths: string[]
-): CampaignRoutesPayload => ({ routes: routes ?? [], paths: paths ?? [] });
+  paths?: string[]
+): CampaignRoutesPayload =>
+  paths === undefined ? { routes: routes ?? [] } : { routes: routes ?? [], paths };
 
 export interface EndpointRouteSourceConfig {
   /**
@@ -120,7 +129,8 @@ export interface EndpointRouteSource {
    * payload would otherwise refuse every rule, turning the first request after
    * every deploy into an un-personalized one — a silent, permanent-looking
    * failure. Not-yet-known and known-absent are different states, and only the
-   * second one is evidence.
+   * second one is evidence. Unknown is spelled by a payload with no `paths`
+   * at all; **an empty list is evidence**, and refuses every candidate.
    *
    * `origin` says whose page list to answer from, and the adapter passes the
    * same origin it passed to `getRoutes`. Without it the answer comes from the
@@ -375,9 +385,12 @@ export const createEndpointRouteSource = (
           // Frozen to the leaf, for the same reason the Contentful source
           // freezes: every request on this isolate gets these by reference,
           // and the callers are code we do not control.
-          const payload = campaignRoutesPayload(body.routes, Array.isArray(body.paths) ? body.paths : []);
+          const payload = campaignRoutesPayload(
+            body.routes,
+            Array.isArray(body.paths) ? body.paths : undefined
+          );
           freezeRoutes(payload.routes);
-          Object.freeze(payload.paths);
+          if (payload.paths) Object.freeze(payload.paths);
           return Object.freeze(payload);
         } finally {
           activeLoads -= 1;
@@ -429,9 +442,10 @@ export const createEndpointRouteSource = (
       // to offer, and creating a loader to say so would let this synchronous
       // path grow the map.
       const payload = resolved === null ? null : (loaders.get(resolved)?.peek() ?? null);
-      // Nothing loaded yet, or an endpoint that returned no path list at all:
-      // no evidence either way, so do not refuse on it.
-      if (!payload || payload.paths.length === 0) return true;
+      // Nothing loaded yet, or an endpoint that sent no path list at all: no
+      // evidence either way, so do not refuse on it. An empty list is not that
+      // case — it is the endpoint saying nothing exists, and it refuses below.
+      if (!payload || payload.paths === undefined) return true;
       const wanted = normalize(candidate);
       for (let index = 0; index < payload.paths.length; index += 1) {
         if (normalize(payload.paths[index]!) === wanted) return true;

@@ -23,10 +23,9 @@ describe('campaignRoutesPayload', () => {
     });
   });
 
-  it('survives a caller with nothing to report', () => {
-    expect(
-      campaignRoutesPayload(undefined as never, undefined as never)
-    ).toEqual({ routes: [], paths: [] });
+  it('survives a caller with nothing to report, and leaves paths out rather than inventing an empty one', () => {
+    expect(campaignRoutesPayload(undefined as never, undefined)).toEqual({ routes: [] });
+    expect(campaignRoutesPayload([], [])).toEqual({ routes: [], paths: [] });
   });
 });
 
@@ -95,6 +94,20 @@ describe('createEndpointRouteSource', () => {
     });
     await source.getRoutes('https://site.test');
     expect(source.pageExists('/whatever')).toBe(true);
+  });
+
+  it('refuses every candidate once the endpoint has said the site serves no pages', async () => {
+    // `[]` is not "unknown". The payload carries `paths` whenever the route
+    // handler supplied one, so an empty list is the endpoint's explicit
+    // statement that nothing exists — a page query that failed into an empty
+    // array, a deploy that has not published yet. Reading it as unknown
+    // switched the 404 guard off exactly when the inventory was most likely
+    // wrong, and rewrote paid traffic to pages that were not there.
+    const source = createEndpointRouteSource({
+      fetchImpl: respondWith({ routes: [ROUTE], paths: [] })
+    });
+    await source.getRoutes('https://site.test');
+    expect(source.pageExists('/pricing-enterprise')).toBe(false);
   });
 
   it('serves no rules, rather than throwing, when the endpoint is down', async () => {

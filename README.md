@@ -104,6 +104,11 @@ way. And because that route runs *inside* the app, it can return the rules **and
 the paths that exist**, which is what stops a rule published before its page from
 turning a live ad into a 404. Reading the CMS from the edge cannot answer that.
 
+`paths` is a statement, so make it a true one. An empty list says the site
+serves no pages and refuses every rewrite; leaving it out says the inventory is
+unknown, which protects nothing. Return the real list, or none — never `[]` as
+a placeholder, and never let a failed page query become one.
+
 ### CloudFront and Lambda@Edge
 
 Not published. There is a working adapter in
