@@ -87,6 +87,12 @@ describe('what ships to npm', () => {
     // The selling point, and the thing most easily lost in a hurry.
     expect(pkg.dependencies ?? {}).toEqual({});
   });
+
+  it('is publishable', () => {
+    // `"private": true` makes npm refuse to publish whatever `--access` says,
+    // and the release workflow's `--access public` assumes it is absent.
+    expect(pkg.private).toBeUndefined();
+  });
 });
 
 describeBuilt('the built output', () => {

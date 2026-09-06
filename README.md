@@ -143,6 +143,7 @@ None of these is a regular expression, on purpose.
 | `timeoutMs` | 2.5 s | How long a single read may take before it is abandoned. |
 | `maxStaleMs` | 1 h | How long the last good rules keep serving while the endpoint is down; after that, visitors get their original page. |
 | `bootstrap` | none | Rules to serve before the first read, so a cold server's first visitor is personalized too. |
+| `headers` | none | Sent with every read of the endpoint. On a Vercel preview behind Deployment Protection, pass `{ 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }` so the middleware can read its own rules there; an unset value is skipped. A secret here goes wherever the rules are read from, so off Vercel or Netlify pin `origin` first. |
 | `onError` | none | Called on every failed read, for your own monitoring. |
 | `waitUntil` | none | Your runtime's hook to keep the background refresh alive (Cloudflare Workers, Vercel's edge runtime). |
 | `awaitStaleRefresh` | `false` | Make a stale read wait for its refresh instead of serving stale, for a runtime that freezes when the handler returns. |

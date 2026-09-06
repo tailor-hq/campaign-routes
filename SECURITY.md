@@ -45,9 +45,9 @@ share rules or page lists either. And `isInternalPath` confines every target to
 your own site's paths regardless.
 
 What a forged `Host` could still do is make the middleware issue one `GET`, to
-a fixed path, from inside your network, without seeing the response. So how
-far the request's origin is trusted depends on where the code runs, and the
-default fails closed:
+a fixed path, from inside your network, without seeing the response, carrying
+whatever you put in `headers`. So how far the request's origin is trusted
+depends on where the code runs, and the default fails closed:
 
 - **On a platform that routes by hostname** (Vercel, Netlify), the platform
   never hands your app a request whose Host it did not itself resolve, so the
@@ -96,8 +96,13 @@ version of this package your route handler was built with. None of that is
 secret (the pages are public, the parameters are in your ads, and the version
 is what a dependency scanner reads off your lockfile anyway),
 but it is a tidy summary of your campaign targeting in one place. If that
-matters to you, gate the route on a header your middleware sends and this
-package does not know about.
+matters to you, gate the route on a header and send it with `headers`, which
+is also how a Vercel preview behind Deployment Protection passes its bypass
+secret. A value in `headers` travels only to the origin the policy above
+approved, and a redirect anywhere else is refused before a second request; so
+a secret there is exactly as safe as that origin, and anywhere the platform is
+not resolving the Host for you, pin `origin` or set `trustedOrigins` before
+adding one.
 
 ## What it deliberately does not do
 

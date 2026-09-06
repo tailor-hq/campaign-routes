@@ -2,14 +2,15 @@ name: Release
 
 # Publishes to npm when a version tag is pushed.
 #
-# **Inert until NPM_TOKEN exists**, which is deliberate. Publishing under the
-# `@tailor-ai` scope claims a name we own forever and is not something a merge
-# should be able to do by accident, so the workflow ships first and the secret is
-# added when we mean it. Without the secret the guard below fails the job with a
-# readable message rather than a `npm ERR! need auth` at the end of a build.
+# **Inert until NPM_TOKEN exists**, which is deliberate. A publish under the
+# `@tailor-ai` scope is permanent and is not something a merge should be able
+# to do by accident, so the secret is added when a release is meant. Without it
+# the guard below fails the job with a readable message rather than a
+# `npm ERR! need auth` at the end of a build.
 #
-# Going public later is one flag: `--access public` below, and `private: false`
-# in package.json. Nothing else about this file changes.
+# The package is public: `--access public` below, and no `private` field in
+# package.json (`package-shape.test.ts` pins its absence). A scoped package
+# publishes as restricted unless told otherwise, so the flag is load-bearing.
 
 on:
   push:
@@ -58,10 +59,9 @@ jobs:
             exit 1
           fi
 
-      # `"private": true` in package.json is the gate: npm refuses to publish
-      # at all while it is set, whatever `--access` says. `--access` is only
-      # the visibility once that flips. Change both in the same commit, so the
-      # two can never disagree.
-      - run: npm publish --access restricted --provenance
+      # A `"private": true` in package.json would make npm refuse to publish at
+      # all, whatever `--access` says; `--access` is only the visibility. Keep
+      # the two in agreement in the same commit if either ever changes.
+      - run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

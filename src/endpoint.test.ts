@@ -237,6 +237,111 @@ describe('createEndpointRouteSource', () => {
     ]);
   });
 
+  it('sends the configured headers on the read, and on the one same-origin redirect hop', async () => {
+    // A preview behind Vercel Deployment Protection answers the middleware's
+    // own read with a redirect to Vercel's login, so the only way campaigns
+    // can work there is the bypass header. It has to reach the endpoint on
+    // the trailing-slash hop too, or a Next app with `trailingSlash: true`
+    // is protected on exactly the request that matters.
+    const fetchImpl = jest.fn(async (url: string) =>
+      url.endsWith('/api/campaign-routes')
+        ? { ok: false, status: 308, headers: new Headers({ location: '/api/campaign-routes/' }), json: async () => ({}) }
+        : { ok: true, status: 200, headers: new Headers(), json: async () => ({ routes: [ROUTE], paths: [] }) }
+    ) as unknown as typeof fetch;
+    const source = createEndpointRouteSource({
+      headers: { 'x-vercel-protection-bypass': 'secret-from-env', 'x-unset-on-production': undefined },
+      fetchImpl
+    });
+
+    expect(await source.getRoutes('https://preview.example.com')).toEqual([ROUTE]);
+
+    const calls = (fetchImpl as unknown as jest.Mock).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call[1].headers).toEqual({ 'x-vercel-protection-bypass': 'secret-from-env' });
+    }
+  });
+
+  it('sends no headers at all when none are configured, or every configured one is unset', async () => {
+    // The request a customer without the option makes has to stay the one it
+    // always was; an empty object would still change what some fetch
+    // implementations send.
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    await createEndpointRouteSource({ fetchImpl }).getRoutes('https://example.com');
+    await createEndpointRouteSource({ headers: { 'x-bypass': undefined }, fetchImpl }).getRoutes('https://example.com');
+
+    const calls = (fetchImpl as unknown as jest.Mock).mock.calls;
+    expect(calls[0][1].headers).toBeUndefined();
+    expect(calls[1][1].headers).toBeUndefined();
+  });
+
+  it('refuses a header name or value that could end the header line, at construction', () => {
+    // A name that is not a plain token, or a value outside what a header
+    // line may carry, is either a typo that sends nothing useful or a way to
+    // write a second header. Both fail where somebody is looking, like a bad
+    // `origin` does.
+    const fetchImpl = respondWith({ routes: [], paths: [] });
+    expect(() => createEndpointRouteSource({ headers: { 'x-bad name': 'v' }, fetchImpl })).toThrow(/header name/);
+    expect(() => createEndpointRouteSource({ headers: { 'x-bad:': 'v' }, fetchImpl })).toThrow(/header name/);
+    expect(() => createEndpointRouteSource({ headers: { '': 'v' }, fetchImpl })).toThrow(/header name/);
+    expect(() => createEndpointRouteSource({ headers: { 'x-ok': 'v\r\nx-injected: 1' }, fetchImpl })).toThrow(
+      /single-line/
+    );
+    expect(() => createEndpointRouteSource({ headers: { 'x-ok': 'nul\u0000here' }, fetchImpl })).toThrow(/single-line/);
+    // Latin-1 is a legal header byte; anything past it is not.
+    expect(() => createEndpointRouteSource({ headers: { 'x-ok': 'café' }, fetchImpl })).not.toThrow();
+    expect(() => createEndpointRouteSource({ headers: { 'x-ok': 'snow ☃' }, fetchImpl })).toThrow(
+      /single-line/
+    );
+    expect(() => createEndpointRouteSource({ headers: { 'x-ok': 42 as unknown as string }, fetchImpl })).toThrow(
+      /single-line/
+    );
+  });
+
+  it('refuses a bad header name even when its value is unset, so a typo fails on every deployment', () => {
+    // The name is static configuration and the value is usually an env var
+    // that only previews carry. Skipping validation on an unset value would
+    // make `{ 'x-vercel-protection bypass': process.env.X }` construct
+    // cleanly everywhere except the one place it was meant to work.
+    const fetchImpl = respondWith({ routes: [], paths: [] });
+    expect(() => createEndpointRouteSource({ headers: { 'x-bad name': undefined }, fetchImpl })).toThrow(
+      /header name/
+    );
+  });
+
+  it('sends an empty-string value as an empty header, since only undefined means unset', async () => {
+    const fetchImpl = respondWith({ routes: [ROUTE], paths: [] });
+    await createEndpointRouteSource({ headers: { 'x-empty': '' }, fetchImpl }).getRoutes('https://example.com');
+    expect((fetchImpl as unknown as jest.Mock).mock.calls[0][1].headers).toEqual({ 'x-empty': '' });
+  });
+
+  it('sends the secret exactly once, to the approved origin, when the endpoint redirects elsewhere', async () => {
+    // The one thing the option must never do: a redirect to a metadata
+    // service or an attacker's host must not receive the bypass secret, and
+    // the read fails instead.
+    const fetchImpl = jest.fn(async () => ({
+      ok: false,
+      status: 302,
+      headers: new Headers({ location: 'http://169.254.169.254/latest/meta-data/' }),
+      json: async () => ({})
+    })) as unknown as typeof fetch;
+    const errors: string[] = [];
+    const source = createEndpointRouteSource({
+      origin: 'https://www.example.com',
+      headers: { 'x-vercel-protection-bypass': 'secret' },
+      onError: (error) => errors.push((error as Error).message),
+      fetchImpl
+    });
+
+    expect(await source.getRoutes('https://evil.example')).toEqual([]);
+
+    const calls = (fetchImpl as unknown as jest.Mock).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('https://www.example.com/api/campaign-routes');
+    expect(calls[0][1].headers).toEqual({ 'x-vercel-protection-bypass': 'secret' });
+    expect(errors).toEqual(['campaign routes endpoint redirected off its own origin']);
+  });
+
   it('freezes each rule to the leaf, so an onMatch cannot change routing for the next visitor', async () => {
     // The outer array being frozen is not enough: a consumer's onMatch that
     // "normalizes" matchParams in place would rewrite the rule for every

@@ -152,6 +152,25 @@ export interface EndpointRouteSourceConfig {
    * starts immediately behind it.
    */
   bootstrap?: CampaignRoutesPayload;
+  /**
+   * Headers sent with every read of the endpoint.
+   *
+   * For a preview behind Vercel Deployment Protection this is where the
+   * bypass header goes, so the middleware can read its own rules there:
+   * `{ 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }`.
+   * An entry whose value is `undefined` is skipped, so a variable that only
+   * exists on previews adds nothing in production. A name that is not a plain
+   * header token, or a value that is not a single header line, throws at
+   * construction rather than becoming a header line somebody else wrote.
+   *
+   * Sent to whichever origin the policy approved, and nowhere else: a redirect
+   * off that origin is refused before any second request. That makes a secret
+   * here exactly as safe as the origin it is read from. On Vercel or Netlify
+   * the platform resolved the Host, so the request origin is safe; anywhere
+   * else, a forged Host would carry the secret away, so pin `origin` or set
+   * `trustedOrigins` before putting a secret in here.
+   */
+  headers?: Record<string, string | undefined>;
   /** Injectable for tests and for runtimes with a non-global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -491,6 +510,51 @@ const normalize = (path: string): string => {
   return trimmed;
 };
 
+/**
+ * The characters a header name may contain (RFC 9110 token). Anything else,
+ * a space, a colon, CR or LF, is refused at construction: the value came from
+ * configuration, and a name that is not a token is either a typo that would
+ * silently send nothing useful or an attempt to end the header and start
+ * another one.
+ */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * What a header value may contain (RFC 9110 field-value: tab, printable
+ * ASCII and the high half of Latin-1). Checked here so a NUL or a character
+ * outside that range fails at construction, where a bad `origin` fails, and
+ * not as a fetch error on every read.
+ */
+const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
+
+/**
+ * The configured headers with the unset ones dropped, or `undefined` when
+ * there is nothing to send, so a read with no configuration is the same
+ * request it always was.
+ */
+const requestHeaders = (
+  configured: Record<string, string | undefined> | undefined
+): Record<string, string> | undefined => {
+  if (!configured) return undefined;
+  const sent: Record<string, string> = {};
+  for (const name of Object.keys(configured)) {
+    // The name is static configuration, so a typo fails everywhere, not only
+    // on the deployment where the variable behind it happens to be set.
+    if (!HEADER_NAME.test(name)) {
+      throw new Error('campaign routes: headers entry is not a valid header name: ' + JSON.stringify(name));
+    }
+    const value = configured[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !HEADER_VALUE.test(value)) {
+      throw new Error('campaign routes: headers entry ' + JSON.stringify(name) + ' must be a single-line header value');
+    }
+    sent[name] = value;
+  }
+  // Handed to every fetch for the life of the source, so nothing downstream
+  // (a custom fetchImpl included) can rewrite it for the next read.
+  return Object.keys(sent).length > 0 ? Object.freeze(sent) : undefined;
+};
+
 export const createEndpointRouteSource = (
   config: EndpointRouteSourceConfig = {}
 ): EndpointRouteSource => {
@@ -536,6 +600,7 @@ export const createEndpointRouteSource = (
     : null;
   const ttlMs = duration(config.ttlMs, DEFAULT_TTL_MS);
   const timeoutMs = duration(config.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const headers = requestHeaders(config.headers);
 
   /** Insertion order is recency: a hit is re-inserted, and eviction takes the head. */
   const loaders = new Map<string, CachedLoader<CampaignRoutesPayload>>();
@@ -603,7 +668,7 @@ export const createEndpointRouteSource = (
           // origin, and a redirect is the endpoint choosing a new destination
           // after that check said yes. One same-origin hop is allowed, for a
           // Next app with `trailingSlash: true`; anything else is a failed read.
-          let response = await doFetch(origin + path, { signal, redirect: 'manual' });
+          let response = await doFetch(origin + path, { signal, redirect: 'manual', headers });
           if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('location');
             if (location === null) {
@@ -611,7 +676,7 @@ export const createEndpointRouteSource = (
             }
             const next = sameOriginRedirect(location, origin);
             if (next === null) throw new Error('campaign routes endpoint redirected off its own origin');
-            response = await doFetch(next, { signal, redirect: 'manual' });
+            response = await doFetch(next, { signal, redirect: 'manual', headers });
             if (response.status >= 300 && response.status < 400) {
               throw new Error('campaign routes endpoint redirected twice');
             }

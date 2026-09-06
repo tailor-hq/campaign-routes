@@ -24,7 +24,6 @@
     "url": "git+https://github.com/tailor-hq/campaign-routes.git"
   },
   "type": "module",
-  "private": true,
   "engines": {
     "node": ">=18"
   },

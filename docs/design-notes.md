@@ -96,9 +96,14 @@ runs:
   preview behind Vercel's Deployment Protection answers the middleware's own
   fetch with a redirect to Vercel's login page, which the package refuses to
   follow because it never leaves the origin it was told to read, so campaigns
-  are off there until `/api/campaign-routes` is allowed through. Seen on a
-  protected preview: `onError` receives "campaign routes endpoint redirected
-  off its own origin" and every visitor gets their original page.
+  are off there until the read is let through. Seen on a protected preview:
+  `onError` receives "campaign routes endpoint redirected off its own origin"
+  and every visitor gets their original page. The way through is Vercel's
+  Protection Bypass for Automation: switch it on for the project, and pass
+  `headers: { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }`
+  to `createEndpointRouteSource`. The header travels only to the origin the
+  policy approved, and an unset variable sends nothing, so the same line is
+  harmless in production.
 - **In development** (`NODE_ENV` of `development` or `test`) loopback is
   allowed too, so `next dev` works with no configuration.
 - **Everywhere else**, including an unset `NODE_ENV`, a request-derived origin

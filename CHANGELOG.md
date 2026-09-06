@@ -8,12 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing yet.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-09-05
 
-First release. Not yet published.
+First release.
 
 ### Added
 
+- `headers` on the endpoint source: sent with every read, so a Vercel preview
+  behind Deployment Protection can pass its bypass header and read its own
+  rules. Names must be plain header tokens and values single-line, checked at
+  construction; an unset value is skipped.
 - `matchCampaignRoute(rules, request)` — the matching core. Pure, no
   dependencies, no network, ES 5.1 built-ins only so it runs inside a CloudFront
   Function. About 7 kB built, against that runtime's 10 kB budget, and
