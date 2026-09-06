@@ -1,12 +1,19 @@
 name: Release
 
-# Publishes to npm when a version tag is pushed.
+# Publishes to npm when a version tag is pushed, unless that version is
+# already there.
 #
-# **Inert until NPM_TOKEN exists**, which is deliberate. A publish under the
-# `@tailor-ai` scope is permanent and is not something a merge should be able
-# to do by accident, so the secret is added when a release is meant. Without it
-# the guard below fails the job with a readable message rather than a
-# `npm ERR! need auth` at the end of a build.
+# A version can reach npm two ways: this workflow with NPM_TOKEN set, or a
+# maintainer's own `npm publish` with a one-time password, which is how 0.1.0
+# went out. Either way the tag is the record of which commit a version was
+# built from, so a tag for a version npm already has is a no-op with a notice
+# rather than a failed run, and a run that is not on a tag publishes nothing.
+#
+# **Inert until NPM_TOKEN exists** for a version npm does not have. A publish
+# under the `@tailor-ai` scope is permanent and is not something a merge should
+# be able to do by accident, so the secret is added when a release is meant.
+# Without it the guard below fails the job with a readable message rather than
+# a `npm ERR! need auth` at the end of a build.
 #
 # The package is public: `--access public` below, and no `private` field in
 # package.json (`package-shape.test.ts` pins its absence). A scoped package
@@ -15,6 +22,9 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # A manual run must still pick a tag as its ref; the first step refuses a
+  # branch, so dispatch can re-run a release but never publish an untagged
+  # commit.
   workflow_dispatch:
 
 permissions:
@@ -25,6 +35,16 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: refuse anything that is not a tag
+        if: github.ref_type != 'tag'
+        # The runner's own variables, never `${{ github.ref_name }}` inside a
+        # script: a ref name is attacker-chosen text on a public repository,
+        # and a template expression pastes it into the shell unquoted.
+        run: |
+          echo "This workflow publishes from a version tag only; it was run on $GITHUB_REF_TYPE $GITHUB_REF_NAME."
+          echo "Choose a tag as the ref, or push one."
+          exit 1
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -32,24 +52,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
-      - name: refuse to publish without a token
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN is not set, so this repository cannot publish yet."
-            echo "That is the expected state until we decide to publish."
-            exit 1
-          fi
-
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-      - run: npm test
-
       # The tag and package.json disagreeing is the classic release bug: the tag
       # says v0.2.0, npm gets 0.1.0, and the mismatch is only visible months
       # later when somebody tries to find the source for a published version.
+      # Checked before anything else, so a wrong tag is refused even when there
+      # is nothing to publish.
       - name: check the tag matches the version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -59,9 +66,51 @@ jobs:
             exit 1
           fi
 
+      # Only npm's own "no such version" answer means unpublished. A registry
+      # outage, a DNS failure or a misconfigured client is an unknown state,
+      # and a publish decided on an unknown state is the one this job must
+      # never make, so anything else fails the run here.
+      - name: see whether npm already has this version
+        id: registry
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if OUTPUT=$(npm view "$NAME@$VERSION" version 2>&1); then
+            echo "$NAME@$VERSION is already on npm. The tag records the commit it was built from; nothing to publish."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          elif echo "$OUTPUT" | grep -q 'E404'; then
+            echo "$NAME@$VERSION is not on npm yet."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not tell whether $NAME@$VERSION is on npm; refusing to decide a publish on that."
+            echo "$OUTPUT"
+            exit 1
+          fi
+
+      - name: refuse to publish without a token
+        if: steps.registry.outputs.published == 'false'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is not set, so this repository cannot publish yet."
+            echo "That is the expected state until we decide to publish from here."
+            exit 1
+          fi
+
+      - if: steps.registry.outputs.published == 'false'
+        run: npm ci
+      - if: steps.registry.outputs.published == 'false'
+        run: npm run lint
+      - if: steps.registry.outputs.published == 'false'
+        run: npm run build
+      - if: steps.registry.outputs.published == 'false'
+        run: npm test
+
       # A `"private": true` in package.json would make npm refuse to publish at
       # all, whatever `--access` says; `--access` is only the visibility. Keep
       # the two in agreement in the same commit if either ever changes.
-      - run: npm publish --access public --provenance
+      - if: steps.registry.outputs.published == 'false'
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
